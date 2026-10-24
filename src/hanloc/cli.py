@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from hanloc.crop import crop_glyph, load_image
+from hanloc.measure import typical_ink_width
 from hanloc.pipeline import locate
-from hanloc.profiles import PROFILES
-from hanloc.types import Centerfold, Page, Profile, page_to_dict
+from hanloc.profiles import PROFILES, get_profile
+from hanloc.scale import expected_char_px, long_side_for_char
+from hanloc.types import Page, page_to_dict
 
 
 def _draw_overlay(image: np.ndarray, page: Page) -> np.ndarray:
@@ -74,20 +77,28 @@ def write_page(image: np.ndarray, page: Page, out_dir: Path) -> None:
 
 def _locate_command(args: argparse.Namespace) -> int:
     image = load_image(args.image)
-    chosen: Profile | str = args.profile
+    chosen = get_profile(args.profile)
     if args.centerfold:
-        from dataclasses import replace
-
-        from hanloc.profiles import get_profile
-
-        base = get_profile(args.profile)
-        fold: Centerfold = args.centerfold
-        chosen = replace(base, centerfold=fold)
+        chosen = replace(chosen, centerfold=args.centerfold)  # type: ignore[arg-type]
+    if args.char_px is not None:
+        if not 8 <= args.char_px <= 4000:
+            print("字高需在 8 到 4000 像素之间")
+            return 2
+        page_long = max(int(image.shape[0]), int(image.shape[1]))
+        chosen = replace(chosen, max_side_len=long_side_for_char(page_long, args.char_px))
     page = locate(image, chosen)
     write_page(image, page, Path(args.out))
+    page_long = max(int(image.shape[0]), int(image.shape[1]))
+    if args.char_px is not None:
+        expected = int(round(args.char_px))
+    else:
+        expected = expected_char_px(page_long, chosen.max_side_len)
+    found = typical_ink_width(image, page.glyphs)
+    measured = "没有量到字宽" if found is None else f"实测字宽 {found[0]}（{found[1]} 个字）"
     print(
         f"写出 {len(page.lines)} 行、{len(page.glyphs)} 字、{len(page.flows)} 条语流到 {args.out}"
     )
+    print(f"预期字高 {expected}，{measured}")
     return 0
 
 
@@ -100,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         default="book",
         choices=sorted(PROFILES),
-        help="版式：book、woodblock、manuscript、stele、modelbook",
+        help="版式：book 现代本、woodblock 刻本、manuscript 写本、stele 碑帖、modelbook 墨迹",
     )
     locate_parser.add_argument("--out", required=True, help="输出目录")
     locate_parser.add_argument(
@@ -108,6 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["none", "gutter", "left", "right"],
         default=None,
         help="版心位置。默认沿用版式配置",
+    )
+    locate_parser.add_argument(
+        "--char-px",
+        type=float,
+        default=None,
+        help="标尺量得的行列窄边（像素）。用来决定检测前把长边缩到多少",
     )
     locate_parser.set_defaults(func=_locate_command)
     return parser

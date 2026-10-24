@@ -1,7 +1,7 @@
 import numpy as np
 
 from hanloc.prep import light_ink, prepare_page, suppress_red
-from hanloc.profiles import MODELBOOK, STELE, get_profile
+from hanloc.profiles import MODELBOOK, STELE, WOODBLOCK, get_profile
 from hanloc.types import Profile
 
 
@@ -45,5 +45,10 @@ def test_suppress_red_replaces_seals_and_keeps_ink():
     seal = cleaned[12, 12].astype(int)
     assert seal[2] < seal[1] + 45
     assert get_profile("stele") is STELE
+    assert STELE.max_side_len == 2000
+    assert STELE.locate_mode == "lines"
+    assert STELE.polarity == "auto"
+    assert WOODBLOCK.max_side_len == 2000
     assert get_profile("modelbook").suppress_red is True
-    assert MODELBOOK.align_chars is False
+    assert MODELBOOK.max_side_len == 2000
+    assert MODELBOOK.locate_mode == "lines"

@@ -50,7 +50,36 @@
     .layers label { flex-direction: row; align-items: center; gap: 4px; color: var(--ink); font-size: 14px; }
     main { display: grid; grid-template-columns: 1fr 340px; min-height: calc(100vh - 150px); }
     #stage { overflow: auto; padding: 16px; background: var(--panel); }
-    canvas { background: #fff; max-width: 100%; height: auto; }
+    canvas { background: #fff; }
+    #sheet {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      grid-template-rows: 28px auto;
+      width: 100%;
+    }
+    #ruler-corner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      color: var(--muted);
+      border-right: 1px solid var(--stroke);
+      border-bottom: 1px solid var(--stroke);
+    }
+    #ruler-x, #ruler-y { display: block; background: #fff; }
+    #ruler-x { width: 100%; height: 28px; border-bottom: 1px solid var(--stroke); }
+    #ruler-y { width: 48px; height: 100%; border-right: 1px solid var(--stroke); }
+    #frame { position: relative; min-width: 0; }
+    #canvas { width: 100%; height: auto; display: block; }
+    #draft {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      background: transparent;
+    }
     aside { border-left: 1px solid var(--stroke); padding: 16px; overflow: auto; max-height: calc(100vh - 150px); }
     aside h2 { font-size: 14px; margin: 16px 0 8px; }
     #status, .hint { color: var(--muted); }
@@ -89,11 +118,11 @@
     <div class="row">
       <label>版式
         <select id="profile">
-          <option value="book">图书 book</option>
-          <option value="woodblock">刻印本 woodblock</option>
-          <option value="manuscript">手写本 manuscript</option>
-          <option value="stele">碑帖 stele</option>
-          <option value="modelbook">法帖 modelbook</option>
+          <option value="book">现代本</option>
+          <option value="woodblock">刻本</option>
+          <option value="manuscript">写本</option>
+          <option value="stele">碑帖</option>
+          <option value="modelbook">墨迹</option>
         </select>
       </label>
       <label>版心
@@ -106,6 +135,12 @@
         </select>
       </label>
       <button id="ocr" type="button" disabled>执行 OCR</button>
+      <label>字高（行列窄边）
+        <input id="char-px" type="number" min="8" max="4000" step="1" placeholder="标尺量取">
+      </label>
+      <span id="scale-hint" class="hint"></span>
+      <span id="measure" class="hint"></span>
+      <span id="cursor" class="hint"></span>
       <button id="download" class="secondary" type="button" disabled>下载本页 JSON</button>
     </div>
     <div class="row layers">
@@ -145,10 +180,20 @@
     </div>
   </header>
   <main>
-    <div id="stage"><canvas id="canvas"></canvas></div>
+    <div id="stage">
+      <div id="sheet">
+        <div id="ruler-corner">px</div>
+        <canvas id="ruler-x"></canvas>
+        <canvas id="ruler-y"></canvas>
+        <div id="frame">
+          <canvas id="canvas"></canvas>
+          <canvas id="draft"></canvas>
+        </div>
+      </div>
+    </div>
     <aside>
       <p id="status">打开图片或 PDF，再逐页执行 OCR。改订另存，不覆盖原来的识别结果。</p>
-      <p class="legend">蓝行框，紫虚线是字身格，绿线是单字框。橙不确定，深红是低于阈值的项，红是当前选中。</p>
+      <p class="legend">图像四周的标尺以像素计。移动指针显示坐标；按住左键拖动，则显示所画框的宽高。蓝行框，紫虚线是字身格，绿线是单字框。橙不确定，深红是低于阈值的项，红是当前选中。</p>
       <dl id="detail">
         <dt>原文</dt><dd id="original">—</dd>
         <dt>置信度</dt><dd id="score">—</dd>
@@ -184,10 +229,24 @@
       marginalia: "旁注",
       centerfold: "版心",
     };
+    // 与 src/hanloc/scale.py 中的常数一致。
+    const SCALE = { target: 48, side: 2000, min: 960, max: 2400 };
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
+    const draft = document.getElementById("draft");
+    const draftCtx = draft.getContext("2d");
+    const rulerX = document.getElementById("ruler-x");
+    const rulerY = document.getElementById("ruler-y");
+    const rulerXCtx = rulerX.getContext("2d");
+    const rulerYCtx = rulerY.getContext("2d");
     const status = document.getElementById("status");
     const image = new Image();
+    let pointer = null;
+    let anchor = null;
+    let box = null;
+    let dragMoved = false;
+    let measuring = false;
+    let measure = null;
 
     let sessionId = null;
     let pageCount = 0;
@@ -301,6 +360,10 @@
       pageIndex = index;
       selectedId = null;
       detailToken = "";
+      anchor = null;
+      box = null;
+      dragMoved = false;
+      measuring = false;
       const response = await fetch(`/api/session/${sessionId}/pages/${index}`);
       if (!response.ok) {
         status.textContent = await errorText(response);
@@ -309,6 +372,7 @@
       const data = await response.json();
       if (token !== loadToken) return;
       page = data.page;
+      measure = data.measure;
       const picture = await fetch(`/api/session/${sessionId}/pages/${index}/image`);
       if (!picture.ok) {
         status.textContent = await errorText(picture);
@@ -319,6 +383,7 @@
       image.onload = () => {
         if (token !== loadToken) return;
         draw();
+        updateScaleHint();
       };
       image.src = imageUrl;
       updatePager();
@@ -327,6 +392,7 @@
       syncDetail(true);
       if (!page) status.textContent = "这一页还没有识别。点「执行 OCR」后再核对。";
       else status.textContent = `本页 ${page.glyphs.length} 个字，${page.lines.length} 行。`;
+      showMeasure();
     }
 
     function updatePager() {
@@ -356,6 +422,8 @@
       const body = new FormData();
       body.set("profile", document.getElementById("profile").value);
       body.set("centerfold", document.getElementById("centerfold").value);
+      const charPx = document.getElementById("char-px").value.trim();
+      if (charPx) body.set("char_px", charPx);
       setBusy(true);
       status.textContent = "正在识别这一页…";
       try {
@@ -366,6 +434,7 @@
         if (!response.ok) throw new Error(await errorText(response));
         const data = await response.json();
         page = data.page;
+        measure = data.measure;
         selectedId = null;
         detailToken = "";
         status.textContent = `识别完成。本页 ${page.glyphs.length} 个字。`;
@@ -373,6 +442,7 @@
         refreshQueue();
         refreshFlows();
         syncDetail(true);
+        showMeasure();
         draw();
       } catch (error) {
         status.textContent = error.message;
@@ -459,11 +529,158 @@
       return { text, score };
     }
 
+    function pageLong() {
+      return Math.max(image.naturalWidth || 0, image.naturalHeight || 0);
+    }
+
+    function expectedChar(longSide, maxSide) {
+      if (longSide <= maxSide) return SCALE.target;
+      return Math.round(SCALE.target * longSide / maxSide);
+    }
+
+    function sideForChar(longSide, charPx) {
+      const requested = Math.round(SCALE.target * longSide / charPx);
+      return Math.max(SCALE.min, Math.min(SCALE.max, requested));
+    }
+
+    function updateScaleHint() {
+      const hint = document.getElementById("scale-hint");
+      const longSide = pageLong();
+      const raw = document.getElementById("char-px").value.trim();
+      if (!longSide) {
+        hint.textContent = raw
+          ? `已记下字高 ${raw} 像素。打开页面后按它缩放。`
+          : "标尺单位是像素。量出行或列较窄的一边，填在左边，再执行 OCR。";
+        return;
+      }
+      if (!raw) {
+        const expected = expectedChar(longSide, SCALE.side);
+        hint.textContent = `留空时按长边 ${SCALE.side}，约相当于页面上 ${expected} 像素高的字。`;
+        return;
+      }
+      const charPx = Number(raw);
+      if (!(charPx >= 8)) {
+        hint.textContent = "字高请填像素，至少 8。";
+        return;
+      }
+      const side = sideForChar(longSide, charPx);
+      hint.textContent = `将按长边 ${side} 送入检测（限制在 ${SCALE.min} 到 ${SCALE.max}）。`;
+    }
+
+    function showMeasure() {
+      const element = document.getElementById("measure");
+      if (!measure || measure.measured_px == null) {
+        element.textContent = measure && measure.expected_px != null
+          ? `预期字高 ${measure.expected_px}。这次没有量到字宽。`
+          : "";
+        return;
+      }
+      const expected = measure.expected_px == null ? "—" : measure.expected_px;
+      element.textContent = `预期字高 ${expected}　实测字宽 ${measure.measured_px}（${measure.count} 个字）`;
+    }
+
+    function tickStep(span, viewLength) {
+      const unit = viewLength / Math.max(span, 1);
+      const steps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
+      for (const step of steps) {
+        if (step * unit >= 56) return step;
+      }
+      return steps[steps.length - 1];
+    }
+
+    function paintRulers() {
+      if (!image.naturalWidth) return;
+      const viewW = Math.max(1, Math.round(canvas.clientWidth));
+      const viewH = Math.max(1, Math.round(canvas.clientHeight));
+      rulerX.width = viewW;
+      rulerX.height = 28;
+      rulerY.width = 48;
+      rulerY.height = viewH;
+      paintHorizontal(viewW, image.naturalWidth);
+      paintVertical(viewH, image.naturalHeight);
+    }
+
+    function paintHorizontal(viewLength, span) {
+      const context = rulerXCtx;
+      context.clearRect(0, 0, viewLength, 28);
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, viewLength, 28);
+      const step = tickStep(span, viewLength);
+      context.strokeStyle = "#57534e";
+      context.fillStyle = "#57534e";
+      context.font = "11px sans-serif";
+      context.lineWidth = 1;
+      context.beginPath();
+      for (let value = 0; value <= span; value += step) {
+        const pos = (value / span) * viewLength;
+        context.moveTo(pos + 0.5, 28);
+        context.lineTo(pos + 0.5, 16);
+        context.fillText(String(value), pos + 3, 12);
+      }
+      const minor = step / 5;
+      if (minor * (viewLength / span) >= 6) {
+        for (let value = 0; value <= span; value += minor) {
+          const pos = (value / span) * viewLength;
+          context.moveTo(pos + 0.5, 28);
+          context.lineTo(pos + 0.5, 22);
+        }
+      }
+      context.stroke();
+      if (!pointer) return;
+      const mark = (pointer.x / span) * viewLength;
+      context.strokeStyle = "#8a1c1c";
+      context.beginPath();
+      context.moveTo(mark + 0.5, 0);
+      context.lineTo(mark + 0.5, 28);
+      context.stroke();
+    }
+
+    function paintVertical(viewLength, span) {
+      const context = rulerYCtx;
+      context.clearRect(0, 0, 48, viewLength);
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, 48, viewLength);
+      const step = tickStep(span, viewLength);
+      context.strokeStyle = "#57534e";
+      context.fillStyle = "#57534e";
+      context.font = "11px sans-serif";
+      context.lineWidth = 1;
+      context.textAlign = "right";
+      context.beginPath();
+      for (let value = 0; value <= span; value += step) {
+        const pos = (value / span) * viewLength;
+        context.moveTo(48, pos + 0.5);
+        context.lineTo(34, pos + 0.5);
+        context.fillText(String(value), 32, pos + 11);
+      }
+      const minor = step / 5;
+      if (minor * (viewLength / span) >= 6) {
+        for (let value = 0; value <= span; value += minor) {
+          const pos = (value / span) * viewLength;
+          context.moveTo(48, pos + 0.5);
+          context.lineTo(42, pos + 0.5);
+        }
+      }
+      context.stroke();
+      context.textAlign = "left";
+      if (!pointer) return;
+      const mark = (pointer.y / span) * viewLength;
+      context.strokeStyle = "#8a1c1c";
+      context.beginPath();
+      context.moveTo(0, mark + 0.5);
+      context.lineTo(48, mark + 0.5);
+      context.stroke();
+    }
+
     function draw() {
       if (!image.naturalWidth) return;
       canvas.width = image.naturalWidth;
       canvas.height = image.naturalHeight;
       ctx.drawImage(image, 0, 0);
+      requestAnimationFrame(() => {
+        paintRulers();
+        paintDraft();
+      });
       if (!page) return;
       const shown = layers();
       const flows = flowOfGlyph();
@@ -768,7 +985,90 @@
       URL.revokeObjectURL(link.href);
     }
 
+    function imagePoint(event) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) * (image.naturalWidth / rect.width),
+        y: (event.clientY - rect.top) * (image.naturalHeight / rect.height),
+      };
+    }
+
+    function showCursor() {
+      const element = document.getElementById("cursor");
+      if (box && (anchor || measuring)) {
+        element.textContent = `宽 ${Math.round(box.w)}  高 ${Math.round(box.h)}`;
+        return;
+      }
+      if (pointer) {
+        element.textContent = `x ${Math.round(pointer.x)}  y ${Math.round(pointer.y)}`;
+        return;
+      }
+      element.textContent = "";
+    }
+
+    function paintDraft() {
+      if (!image.naturalWidth) return;
+      draft.width = image.naturalWidth;
+      draft.height = image.naturalHeight;
+      if (!box) return;
+      draftCtx.strokeStyle = "#8a1c1c";
+      draftCtx.lineWidth = Math.max(1, image.naturalWidth / 700);
+      draftCtx.strokeRect(box.x, box.y, box.w, box.h);
+    }
+
+    canvas.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || !image.naturalWidth) return;
+      event.preventDefault();
+      anchor = imagePoint(event);
+      pointer = anchor;
+      dragMoved = false;
+      measuring = false;
+      box = { x: anchor.x, y: anchor.y, w: 0, h: 0 };
+      showCursor();
+      paintDraft();
+    });
+    canvas.addEventListener("mousemove", (event) => {
+      if (!image.naturalWidth) return;
+      pointer = imagePoint(event);
+      if (anchor && (event.buttons & 1)) {
+        const width = pointer.x - anchor.x;
+        const height = pointer.y - anchor.y;
+        if (Math.abs(width) > 3 || Math.abs(height) > 3) dragMoved = true;
+        box = {
+          x: Math.min(anchor.x, pointer.x),
+          y: Math.min(anchor.y, pointer.y),
+          w: Math.abs(width),
+          h: Math.abs(height),
+        };
+        paintDraft();
+      }
+      showCursor();
+      paintRulers();
+    });
+    window.addEventListener("mouseup", (event) => {
+      if (event.button !== 0 || !anchor) return;
+      anchor = null;
+      if (!dragMoved) {
+        box = null;
+        measuring = false;
+        paintDraft();
+      } else {
+        measuring = true;
+      }
+      showCursor();
+    });
+    canvas.addEventListener("mouseleave", () => {
+      pointer = null;
+      showCursor();
+      paintRulers();
+    });
+    window.addEventListener("resize", () => requestAnimationFrame(paintRulers));
+    document.getElementById("char-px").addEventListener("input", updateScaleHint);
     canvas.addEventListener("click", (event) => {
+      if (dragMoved) {
+        dragMoved = false;
+        return;
+      }
       if (!page) return;
       const rect = canvas.getBoundingClientRect();
       const x = (event.clientX - rect.left) * (canvas.width / rect.width);
@@ -800,6 +1100,7 @@
       };
     });
     refreshQueue();
+    updateScaleHint();
   </script>
 </body>
 </html>

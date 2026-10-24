@@ -15,9 +15,11 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from hanloc.crop import crop_glyph
+from hanloc.measure import typical_ink_width
 from hanloc.pipeline import locate
 from hanloc.profiles import PROFILES
 from hanloc.review import set_correction
+from hanloc.scale import expected_char_px, long_side_for_char
 from hanloc.types import Glyph, Line, Page, page_to_dict
 
 app = FastAPI(title="hanloc")
@@ -36,6 +38,9 @@ class _Slot:
     pdf: Any = None
     pdf_index: int = 0
     page: Page | None = None
+    expected_px: int | None = None
+    measured_px: int | None = None
+    measured_count: int = 0
 
 
 @dataclass
@@ -45,6 +50,16 @@ class _Document:
     slots: list[_Slot]
     rendered: list[int] = field(default_factory=list)
     buffers: list[bytes] = field(default_factory=list)
+
+
+def _measure(slot: _Slot) -> dict[str, int | None] | None:
+    if slot.expected_px is None and slot.measured_px is None:
+        return None
+    return {
+        "expected_px": slot.expected_px,
+        "measured_px": slot.measured_px,
+        "count": slot.measured_count,
+    }
 
 
 def _sort_key(name: str) -> list[object]:
@@ -220,6 +235,7 @@ def read_page(session_id: str, index: int) -> dict[str, object]:
         "width": width,
         "height": height,
         "page": None if slot.page is None else page_to_dict(slot.page),
+        "measure": _measure(slot),
     }
 
 
@@ -232,12 +248,26 @@ def read_image(session_id: str, index: int) -> Response:
     return Response(content=encoded.tobytes(), media_type="image/jpeg")
 
 
+def _max_side(char_px: str, page_long: int) -> int | None:
+    text = char_px.strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="字高需为像素数") from exc
+    if not 8 <= value <= 4000:
+        raise HTTPException(status_code=400, detail="字高需在 8 到 4000 像素之间")
+    return long_side_for_char(page_long, value)
+
+
 @app.post("/api/session/{session_id}/pages/{index}/ocr")
 def ocr_page(
     session_id: str,
     index: int,
     profile: str = Form("book"),
     centerfold: str = Form(""),
+    char_px: str = Form(""),
 ) -> dict[str, object]:
     if profile not in PROFILES:
         raise HTTPException(status_code=400, detail=f"未知版式：{profile}")
@@ -246,11 +276,26 @@ def ocr_page(
     chosen = PROFILES[profile]
     if centerfold in {"none", "gutter", "left", "right"}:
         chosen = replace(chosen, centerfold=centerfold)  # type: ignore[arg-type]
+    image = _image(document, index)
+    side = _max_side(char_px, max(int(image.shape[0]), int(image.shape[1])))
+    if side is not None:
+        chosen = replace(chosen, max_side_len=side)
     try:
-        slot.page = locate(_image(document, index), chosen)
+        slot.page = locate(image, chosen)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"page": page_to_dict(slot.page)}
+    page_long = max(int(image.shape[0]), int(image.shape[1]))
+    if char_px.strip():
+        slot.expected_px = int(round(float(char_px)))
+    else:
+        slot.expected_px = expected_char_px(page_long, PROFILES[profile].max_side_len)
+    found = typical_ink_width(image, slot.page.glyphs)
+    if found is None:
+        slot.measured_px = None
+        slot.measured_count = 0
+    else:
+        slot.measured_px, slot.measured_count = found
+    return {"page": page_to_dict(slot.page), "measure": _measure(slot)}
 
 
 @app.patch("/api/session/{session_id}/pages/{index}/correction")

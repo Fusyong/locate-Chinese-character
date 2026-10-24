@@ -76,8 +76,15 @@ def test_index_is_the_proofreading_page():
     assert "执行 OCR" in response.text
     assert "保存改订" in response.text
     assert "canvas" in response.text
-    assert 'value="stele"' in response.text
-    assert 'value="modelbook"' in response.text
+    assert 'value="book">现代本' in response.text
+    assert 'value="woodblock">刻本' in response.text
+    assert 'value="manuscript">写本' in response.text
+    assert 'value="stele">碑帖' in response.text
+    assert 'value="modelbook">墨迹' in response.text
+    assert 'id="ruler-x"' in response.text
+    assert 'id="char-px"' in response.text
+    assert "字高（行列窄边）" in response.text
+    assert 'id="measure"' in response.text
 
 
 def test_images_open_in_filename_order():
@@ -193,3 +200,18 @@ def test_page_json_used_by_download_contains_both_texts():
     encoded = json.dumps(payload, ensure_ascii=False)
     assert '"char": "测"' in encoded
     assert '"correction": "正"' in encoded
+
+
+def test_char_height_must_be_a_pixel_count():
+    client = _client()
+    opened = client.post(
+        "/api/session",
+        files={"files": ("page.png", io.BytesIO(_png_bytes()), "image/png")},
+    )
+    session_id = opened.json()["session_id"]
+    response = client.post(
+        f"/api/session/{session_id}/pages/0/ocr",
+        data={"profile": "book", "char_px": "很大"},
+    )
+    assert response.status_code == 400
+    assert "像素" in response.json()["detail"]

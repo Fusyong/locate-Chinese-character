@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ from hanloc.detect import detect_lines
 from hanloc.flow import build_flows, centerfold_line_ids, column_size_ids
 from hanloc.prep import prepare_page
 from hanloc.profiles import get_profile
+from hanloc.scale import attempt_sides, detection_failed
 from hanloc.split import WordBox, _Ids, assign_recognition, ink_split, segment_line
 from hanloc.types import Flow, Glyph, Line, Page, Profile, Role
 
@@ -48,6 +50,38 @@ def _flows_for(
     )
 
 
+def _from_lines(
+    image: np.ndarray,
+    detected: list[tuple[Line, list[WordBox]]],
+    profile: Profile,
+) -> tuple[list[Line], list[Glyph]]:
+    lines = [line for line, _words in detected]
+    ids = _Ids()
+    glyphs: list[Glyph] = []
+    for line, words in detected:
+        glyphs.extend(_glyphs_of(image, line, words, ids, profile))
+    return lines, glyphs
+
+
+def _locate_lines(
+    image: np.ndarray, profile: Profile, width: int, height: int
+) -> tuple[list[Line], list[Glyph]]:
+    """先按版式的长边检测。整页没有可用的框时，改试邻近长边，仍不行再按墨迹分列。"""
+    best_lines: list[Line] = []
+    best_glyphs: list[Glyph] = []
+    for side in attempt_sides(profile.max_side_len):
+        detected = detect_lines(image, replace(profile, max_side_len=side))
+        lines, glyphs = _from_lines(image, detected, profile)
+        if not detection_failed(lines, width, height):
+            return lines, glyphs
+        if len(glyphs) > len(best_glyphs):
+            best_lines, best_glyphs = lines, glyphs
+    column_lines, column_glyphs = segment_columns(image)
+    if len(column_glyphs) > len(best_glyphs):
+        return column_lines, column_glyphs
+    return best_lines, best_glyphs
+
+
 def locate(image: str | Path | np.ndarray, profile: str | Profile = "book") -> Page:
     """按版式定位一页。识别文字和置信度随框保存。"""
     chosen = profile if isinstance(profile, Profile) else get_profile(profile)
@@ -57,12 +91,7 @@ def locate(image: str | Path | np.ndarray, profile: str | Profile = "book") -> P
     if chosen.locate_mode == "columns":
         lines, glyphs = segment_columns(prepared)
     else:
-        detected = detect_lines(prepared, chosen)
-        lines = [line for line, _words in detected]
-        ids = _Ids()
-        glyphs = []
-        for line, words in detected:
-            glyphs.extend(_glyphs_of(prepared, line, words, ids, chosen))
+        lines, glyphs = _locate_lines(prepared, chosen, width, height)
     fold_ids = centerfold_line_ids(lines, width, chosen.centerfold)
     narrow_ids, wide_ids = column_size_ids(
         lines,

@@ -17,7 +17,7 @@ WOODBLOCK = Profile(
     reading="vertical_rtl",
     rotate90=True,
     use_cls=False,
-    max_side_len=4000,
+    max_side_len=2000,
     unclip_ratio=1.3,
     split="ink",
     mark_commentary=True,
@@ -29,42 +29,38 @@ MANUSCRIPT = Profile(
     reading="vertical_rtl",
     rotate90=True,
     use_cls=False,
-    max_side_len=4000,
+    max_side_len=2000,
     unclip_ratio=1.3,
     split="ink",
 )
 
-# 列距稳定的碑、墓志。浅字拓片会反相，再按墨迹分列、列内切字。
+# 列距稳定的碑、墓志。浅字拓片先反相，再检出文本行。
 STELE = Profile(
     name="stele",
     reading="vertical_rtl",
     rotate90=False,
     use_cls=False,
-    max_side_len=2200,
+    max_side_len=2000,
     unclip_ratio=1.2,
     split="ink",
     polarity="auto",
-    align_chars=False,
     mark_marginalia=True,
     mark_title=True,
-    locate_mode="columns",
 )
 
-# 法帖、信札、手卷。先去掉朱印，再按墨迹分列。连笔保持整块并标不确定。
+# 墨迹：信札、手卷。先去掉朱印，再按与碑帖相同的方式检出文本行。
 MODELBOOK = Profile(
     name="modelbook",
     reading="vertical_rtl",
     rotate90=False,
     use_cls=False,
-    max_side_len=2200,
+    max_side_len=2000,
     unclip_ratio=1.3,
     split="ink",
     polarity="auto",
     suppress_red=True,
-    align_chars=False,
     mark_marginalia=True,
     mark_title=True,
-    locate_mode="columns",
 )
 
 PROFILES = {
