@@ -82,6 +82,45 @@ def segment_commentary(glyphs: list[Glyph], ratio: float) -> list[tuple[Role, li
     return segments
 
 
+def _thickness(quad: Quad) -> float:
+    """字号近似框的短边：竖列是列宽，横行是行高。"""
+    return min(quad_width(quad), quad_height(quad))
+
+
+def _span(quad: Quad) -> float:
+    return max(quad_width(quad), quad_height(quad))
+
+
+def column_size_ids(
+    lines: list[Line],
+    narrow_ratio: float = 0.0,
+    wide_ratio: float = 0.0,
+) -> tuple[set[str], set[str]]:
+    """按短边把明显偏小的列收成旁注，明显偏大的列收成标题。比例为 0 时不判这一类。"""
+    if len(lines) < 2:
+        return set(), set()
+    sizes = [_thickness(line.quad) for line in lines]
+    lengths = [_span(line.quad) for line in lines]
+    median = statistics.median(sizes)
+    median_length = statistics.median(lengths)
+    if median <= 1e-6:
+        return set(), set()
+    narrow = {
+        line.id
+        for line, size in zip(lines, sizes, strict=True)
+        if narrow_ratio > 0 and size < narrow_ratio * median
+    }
+    wide = {
+        line.id
+        for line, size, length in zip(lines, sizes, lengths, strict=True)
+        if wide_ratio > 0
+        and size > wide_ratio * median
+        and length < 0.75 * median_length
+        and line.id not in narrow
+    }
+    return narrow, wide
+
+
 def centerfold_line_ids(
     lines: list[Line],
     page_width: int,

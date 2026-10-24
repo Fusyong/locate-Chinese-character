@@ -34,6 +34,12 @@ class _Ids:
         return f"glyph-{self._n}"
 
 
+def _as_quad(quad: Quad | None) -> Quad | None:
+    if quad is None:
+        return None
+    return tuple((float(x), float(y)) for x, y in quad)  # type: ignore[return-value]
+
+
 def _glyph(
     ids: _Ids,
     line: Line,
@@ -41,8 +47,9 @@ def _glyph(
     char: str | None,
     score: float | None,
     uncertain: bool = False,
+    cell: Quad | None = None,
 ) -> Glyph:
-    quad = tuple((float(x), float(y)) for x, y in quad)  # type: ignore[assignment]
+    quad = _as_quad(quad)
     return Glyph(
         id=ids.next(),
         line_id=line.id,
@@ -51,6 +58,7 @@ def _glyph(
         char=char,
         score=score,
         uncertain=uncertain,
+        cell=_as_quad(cell),
     )
 
 
@@ -58,7 +66,7 @@ def glyphs_from_words(line: Line, words: list[WordBox], ids: _Ids) -> list[Glyph
     """墨迹切不开时的退路：用识别回推的字框，否则按字数等分。"""
     if words:
         return [
-            _glyph(ids, line, word.quad, word.char, word.score)
+            _glyph(ids, line, word.quad, word.char, word.score, cell=word.quad)
             for word in words
         ]
     text = line.text or ""
@@ -119,7 +127,57 @@ def _slices(ink: np.ndarray, cross: int) -> list[tuple[int, int]]:
     return spans
 
 
-def ink_split(image: np.ndarray, line: Line, ids: _Ids) -> list[Glyph]:
+def _merge_close_fragments(
+    spans: list[tuple[int, int]], cross: int
+) -> list[tuple[int, int]]:
+    """间隙明显小于字距、宽度又不到字身的碎块，并回相邻块。标点的间隙接近字距，留着。"""
+    spans = list(spans)
+    skipped: set[int] = set()
+    guard = 0
+    while guard <= len(spans):
+        guard += 1
+        lengths = [end - start for start, end in spans]
+        body = [length for length in lengths if length >= 0.55 * cross]
+        median = statistics.median(body or lengths) or 1.0
+        gaps = [spans[index + 1][0] - spans[index][1] for index in range(len(spans) - 1)]
+        typical = statistics.median(gaps) if gaps else 0.0
+        close = max(2.0, 0.45 * typical)
+        short_at = next(
+            (
+                index
+                for index, length in enumerate(lengths)
+                if length < 0.45 * median and index not in skipped
+            ),
+            None,
+        )
+        if short_at is None:
+            break
+        neighbors: list[tuple[float, int]] = []
+        if short_at > 0:
+            gap = spans[short_at][0] - spans[short_at - 1][1]
+            if gap <= close:
+                neighbors.append((gap, short_at - 1))
+        if short_at + 1 < len(spans):
+            gap = spans[short_at + 1][0] - spans[short_at][1]
+            if gap <= close:
+                neighbors.append((gap, short_at + 1))
+        if not neighbors:
+            skipped.add(short_at)
+            continue
+        other = min(neighbors)[1]
+        left, right = sorted((short_at, other))
+        merged = (spans[left][0], spans[right][1])
+        spans = [*spans[:left], merged, *spans[right + 1 :]]
+        skipped.clear()
+    return spans
+
+
+def ink_split(
+    image: np.ndarray,
+    line: Line,
+    ids: _Ids,
+    merge_fragments: bool = False,
+) -> list[Glyph]:
     """把列拉直后按墨迹间隙切字。过宽或过窄的块标为不确定。"""
     upright, inverse = warp_quad(image, line.quad, margin=0.0)
     gray = cv2.cvtColor(upright, cv2.COLOR_BGR2GRAY) if upright.ndim == 3 else upright
@@ -133,6 +191,8 @@ def ink_split(image: np.ndarray, line: Line, ids: _Ids) -> list[Glyph]:
         ink = (binary > 0).sum(axis=0)
         cross = height
     spans = _slices(ink, cross)
+    if merge_fragments:
+        spans = _merge_close_fragments(spans, cross)
     if not spans:
         return [_glyph(ids, line, line.quad, None, line.score, uncertain=True)]
     lengths = [end - start for start, end in spans]
@@ -183,7 +243,7 @@ def segment_line(
         if len(forced) != count:
             return glyphs_from_words(line, words, ids)
         pieces = [
-            (start, end, token.char, token.score, True)
+            (start, end, token.char, token.score, True, token.cell)
             for (start, end), token in zip(forced, tokens, strict=True)
         ]
     return _emit(pieces, proj, binary, inverse, tall, line, ids)
@@ -195,6 +255,7 @@ class _Token:
     score: float | None
     weight: float
     prior: float | None = None
+    cell: Quad | None = None
 
 
 def _is_han(char: str) -> bool:
@@ -221,7 +282,10 @@ def _char_weight(char: str | None) -> float:
 
 def _tokens(line: Line, words: list[WordBox]) -> list[_Token]:
     if words:
-        return [_Token(word.char, word.score, _char_weight(word.char)) for word in words]
+        return [
+            _Token(word.char, word.score, _char_weight(word.char), cell=word.quad)
+            for word in words
+        ]
     text = line.text or ""
     return [_Token(char, line.score, _char_weight(char)) for char in text]
 
@@ -316,7 +380,7 @@ def _layout(
             end = min(length, cursor + max(1, int(round(length * token.weight / total))))
         if end <= cursor:
             end = min(length, cursor + 1)
-        pieces.append((cursor, end, token.char, token.score, True))
+        pieces.append((cursor, end, token.char, token.score, True, token.cell))
         cursor = end
     return [piece for piece in pieces if piece[1] > piece[0]]
 
@@ -372,23 +436,37 @@ def _trace(
         if op == "M":
             start, end = spans[span_at]
             token = tokens[token_at]
-            pieces.append((start, end, token.char, token.score, _width_off(end - start, token, em)))
+            pieces.append((
+                start,
+                end,
+                token.char,
+                token.score,
+                _width_off(end - start, token, em),
+                token.cell,
+            ))
         elif op == "G":
             token = tokens[token_at]
-            pieces.append((spans[span_at][0], spans[span_at + 1][1], token.char, token.score, True))
+            pieces.append((
+                spans[span_at][0],
+                spans[span_at + 1][1],
+                token.char,
+                token.score,
+                True,
+                token.cell,
+            ))
         elif op == "S":
             start, end = spans[span_at]
             first, second = tokens[token_at], tokens[token_at + 1]
             cut = _weighted_cut(start, end, first.weight, second.weight)
-            pieces.append((cut, end, second.char, second.score, True))
-            pieces.append((start, cut, first.char, first.score, True))
+            pieces.append((cut, end, second.char, second.score, True, second.cell))
+            pieces.append((start, cut, first.char, first.score, True, first.cell))
         elif op == "X":
             token = tokens[token_at]
             width = max(1, int(round(token.weight * em)))
             center = token.prior if token.prior is not None else _span_center(spans, span_at)
             start = int(round(center - width / 2))
             end = start + width
-            pieces.append((start, end, token.char, token.score, True))
+            pieces.append((start, end, token.char, token.score, True, token.cell))
         span_index, token_index = span_at, token_at
         guard += 1
     pieces.reverse()
@@ -408,7 +486,7 @@ def _weighted_cut(start: int, end: int, first: float, second: float) -> int:
 
 
 def _emit(
-    pieces: list[tuple[int, int, str | None, float | None, bool]],
+    pieces: list[tuple[int, int, str | None, float | None, bool, Quad | None]],
     proj: np.ndarray,
     binary: np.ndarray,
     inverse: np.ndarray,
@@ -418,7 +496,7 @@ def _emit(
 ) -> list[Glyph]:
     glyphs: list[Glyph] = []
     limit = len(proj)
-    for start, end, char, score, conflict in pieces:
+    for start, end, char, score, conflict, cell in pieces:
         start = min(max(0, start), limit - 1)
         end = min(max(start + 1, end), limit)
         start, end = _tighten_axis(proj, start, end)
@@ -445,6 +523,7 @@ def _emit(
                 char,
                 score,
                 uncertain=conflict or not ink,
+                cell=cell,
             )
         )
     return glyphs

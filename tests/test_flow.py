@@ -1,4 +1,4 @@
-from hanloc.flow import build_flows, centerfold_line_ids, segment_commentary
+from hanloc.flow import build_flows, centerfold_line_ids, column_size_ids, segment_commentary
 from hanloc.geometry import angle_deg
 from hanloc.types import Glyph, Line
 
@@ -112,3 +112,21 @@ def test_centerfold_is_the_narrow_column_at_the_gutter_or_edge():
     flows = build_flows(body, glyphs, "vertical_rtl")
     assert flows[0].role == "body"
     assert "gutter" not in {glyph.line_id for glyph in glyphs if glyph.id in flows[0].glyph_ids}
+
+
+def test_column_size_separates_a_caption_and_a_large_heading():
+    lines = [
+        _line("body-a", 400, 20, 480, 400),
+        _line("body-b", 300, 20, 380, 400),
+        _line("caption", 80, 420, 110, 470),
+        _line("heading", 560, 10, 760, 200),
+    ]
+    narrow, wide = column_size_ids(lines, narrow_ratio=0.55, wide_ratio=1.75)
+    assert narrow == {"caption"}
+    assert wide == {"heading"}
+    assert column_size_ids(lines[:2], narrow_ratio=0.55, wide_ratio=1.75) == (set(), set())
+    bold = [
+        _line("body", 100, 0, 180, 400),
+        _line("bold", 300, 0, 460, 400),
+    ]
+    assert column_size_ids(bold, narrow_ratio=0.55, wide_ratio=1.75)[1] == set()

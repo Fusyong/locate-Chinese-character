@@ -11,6 +11,8 @@ ReadingOrder = Literal["horizontal_ltr", "vertical_rtl"]
 Role = Literal["body", "commentary", "title", "marginalia", "centerfold"]
 Centerfold = Literal["none", "gutter", "left", "right"]
 SplitMode = Literal["ctc", "ink"]
+Polarity = Literal["auto", "light", "dark"]
+LocateMode = Literal["lines", "columns"]
 
 
 class HanlocError(RuntimeError):
@@ -31,6 +33,21 @@ class Profile:
     centerfold: Centerfold = "none"
     commentary_ratio: float = 0.7
     mark_commentary: bool = False
+    # dark：墨色深于纸，不反相。light：拓片浅字，强制反相。auto：看中心区域再决定。
+    polarity: Polarity = "dark"
+    suppress_red: bool = False
+    ocr_version: str = "PP-OCRv6"
+    det_model: str = "small"
+    use_dilation: bool = True
+    box_thresh: float = 0.5
+    # 为真时按识别出的字数对齐墨迹；碑帖识别常对不上，改为只按墨迹切。
+    align_chars: bool = True
+    mark_marginalia: bool = False
+    marginal_ratio: float = 0.55
+    mark_title: bool = False
+    title_ratio: float = 1.75
+    # lines：先检出文本行再切字。columns：按墨迹分列，再在列内切字。
+    locate_mode: LocateMode = "lines"
 
 
 @dataclass
@@ -48,7 +65,7 @@ class Line:
 
 @dataclass
 class Glyph:
-    """一个字的外框。score 是字级识别置信度。"""
+    """一个字。quad 是墨迹单字框，cell 是识别回推的字身格。"""
 
     id: str
     line_id: str
@@ -59,6 +76,8 @@ class Glyph:
     uncertain: bool = False
     # 核对时的改订。None 表示未改；空字符串表示改为空。不替换 char。
     correction: str | None = None
+    # 识别回推的字身格。没有这项时为 None。
+    cell: Quad | None = None
 
 
 @dataclass
@@ -90,6 +109,12 @@ def _maybe_float(value: float | None) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _cell_json(quad: Quad | None) -> dict[str, list[list[float]]]:
+    if quad is None:
+        return {}
+    return {"cell": _quad_to_json(quad)}
 
 
 def _correction_json(value: str | None) -> dict[str, str]:
@@ -130,6 +155,7 @@ def page_to_dict(page: Page) -> dict[str, Any]:
                 "score": _maybe_float(glyph.score),
                 "uncertain": glyph.uncertain,
                 **_correction_json(glyph.correction),
+                **_cell_json(glyph.cell),
             }
             for glyph in page.glyphs
         ],
@@ -168,6 +194,7 @@ def page_from_dict(data: dict[str, Any]) -> Page:
             score=None if item.get("score") is None else float(item["score"]),
             uncertain=bool(item.get("uncertain", False)),
             correction=_correction_from_json(item),
+            cell=None if not item.get("cell") else as_quad(item["cell"]),
         )
         for item in data.get("glyphs", [])
     ]

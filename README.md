@@ -9,8 +9,10 @@
 | `book` | 一般图书，横排 | 检出文本行，再按行内墨迹切单字。用识别出的字、汉字和标点的不同宽度对齐；块数对不上时标出可能出错的位置。从左到右、从上到下 |
 | `woodblock` | 古籍刻印本，竖排 | 整页顺时针转 90° 后检测，再映回原图。列从右到左。单字同样按列内墨迹切开。明显偏小的字收成夹注，先右行后左行 |
 | `manuscript` | 古籍手写本，竖排 | 与刻印本相同的列序和切字方式。过宽、过窄或对不上墨迹的字标为不确定 |
+| `stele` | 行列对齐的碑、墓志 | 浅字拓片先反相。列从右到左，单字按墨迹切，不跟识别字数走。明显偏大的列作标题，明显偏小的列作旁注 |
+| `modelbook` | 法帖、信札、手卷 | 先去掉朱印，再按墨迹分列。连成一块、分不开的字保持整块，并标为不确定 |
 
-设计说明见 [docs/调研报告.md](docs/调研报告.md) 和 [docs/开发计划.md](docs/开发计划.md)。
+设计说明见 [docs/调研报告.md](docs/调研报告.md)、[docs/碑帖调研.md](docs/碑帖调研.md) 和 [docs/开发计划.md](docs/开发计划.md)。
 
 ## 安装
 
@@ -37,7 +39,7 @@ python -m hanloc locate samples/60.jpg --profile book --out out
 python -m hanloc locate samples/61.jpg --profile book --out out
 ```
 
-`--profile` 可选 `book`、`woodblock`、`manuscript`，默认 `book`。
+`--profile` 可选 `book`、`woodblock`、`manuscript`、`stele`、`modelbook`，默认 `book`。碑和墓志用 `stele`，法帖和信札用 `modelbook`。
 
 刻印本若要标出版心，加上 `--centerfold`：
 
@@ -53,7 +55,7 @@ python -m hanloc locate samples/61.jpg --profile book --out out
 - `overlay.png`：行框、单字框和语流序号
 - `crops/`：每个字拉正后的图，文件名即字的编号
 
-`page.json` 中，行有 `text` 和 `score`，单字有 `char`、`score` 和 `uncertain`。语流的 `text` 由其中的字按顺序拼成。`role` 为 `body`（正文）、`commentary`（夹注）、`title`（标题）、`marginalia`（旁注）或 `centerfold`（版心）。四点框的顺序是左上、右上、右下、左下，坐标是原图像素，y 向下。
+`page.json` 中，行有 `text` 和 `score`，单字有 `char`、`score` 和 `uncertain`。`quad` 是墨迹单字框，`cell` 是识别回推的字身格；没有字身格时不写 `cell`。语流的 `text` 由其中的字按顺序拼成。`role` 为 `body`（正文）、`commentary`（夹注）、`title`（标题）、`marginalia`（旁注）或 `centerfold`（版心）。四点框的顺序是左上、右上、右下、左下，坐标是原图像素，y 向下。
 
 核对时若改了字或行，改订写在 `correction`。`char`、`text` 和语流的 `text` 仍是识别原文。`correction` 为空字符串表示改为空；没有这个字段表示尚未改订。
 
@@ -67,7 +69,7 @@ print(page.flows[0].text)
 patch = crop_glyph("页面.jpg", page.glyphs[0], margin=0.15)
 ```
 
-`margin` 是四周留白相对字框尺寸的比例。`profile` 也可以传入 `hanloc.profiles` 里的 `BOOK`、`WOODBLOCK`、`MANUSCRIPT`，并用 `dataclasses.replace` 改 `centerfold`。
+`margin` 是四周留白相对字框尺寸的比例。`profile` 也可以传入 `hanloc.profiles` 里的 `BOOK`、`WOODBLOCK`、`MANUSCRIPT`、`STELE`、`MODELBOOK`，并用 `dataclasses.replace` 改 `centerfold`。
 
 ## 核对页
 

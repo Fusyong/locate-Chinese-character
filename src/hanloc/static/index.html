@@ -11,6 +11,7 @@
       --muted: #57534e;
       --line: #1d4e89;
       --glyph: #2a6f4e;
+      --cell: #6d28d9;
       --uncertain: #b15e09;
       --low: #9f1239;
       --selected: #8a1c1c;
@@ -91,6 +92,8 @@
           <option value="book">图书 book</option>
           <option value="woodblock">刻印本 woodblock</option>
           <option value="manuscript">手写本 manuscript</option>
+          <option value="stele">碑帖 stele</option>
+          <option value="modelbook">法帖 modelbook</option>
         </select>
       </label>
       <label>版心
@@ -107,6 +110,7 @@
     </div>
     <div class="row layers">
       <label><input id="show-lines" type="checkbox" checked>行框</label>
+      <label><input id="show-cells" type="checkbox" checked>字身格</label>
       <label><input id="show-glyphs" type="checkbox" checked>单字框</label>
       <label><input id="show-index" type="checkbox" checked>语流序号</label>
       <label><input id="show-original" type="checkbox" checked>原文</label>
@@ -144,7 +148,7 @@
     <div id="stage"><canvas id="canvas"></canvas></div>
     <aside>
       <p id="status">打开图片或 PDF，再逐页执行 OCR。改订另存，不覆盖原来的识别结果。</p>
-      <p class="legend">蓝行框，绿单字，橙不确定，深红是低于阈值的项，红是当前选中。</p>
+      <p class="legend">蓝行框，紫虚线是字身格，绿线是单字框。橙不确定，深红是低于阈值的项，红是当前选中。</p>
       <dl id="detail">
         <dt>原文</dt><dd id="original">—</dd>
         <dt>置信度</dt><dd id="score">—</dd>
@@ -198,6 +202,7 @@
 
     const layers = () => ({
       lines: document.getElementById("show-lines").checked,
+      cells: document.getElementById("show-cells").checked,
       glyphs: document.getElementById("show-glyphs").checked,
       index: document.getElementById("show-index").checked,
       original: document.getElementById("show-original").checked,
@@ -407,14 +412,16 @@
       return [point[0] / quad.length, point[1] / quad.length];
     }
 
-    function drawQuad(quad, color, width) {
+    function drawQuad(quad, color, width, dashed) {
       ctx.beginPath();
       ctx.moveTo(quad[0][0], quad[0][1]);
       for (let i = 1; i < quad.length; i += 1) ctx.lineTo(quad[i][0], quad[i][1]);
       ctx.closePath();
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
+      ctx.setLineDash(dashed ? [Math.max(4, width * 3), Math.max(3, width * 2)] : []);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     function paintText(text, x, y, color, size) {
@@ -479,7 +486,7 @@
           }
         });
       }
-      if (shown.glyphs) {
+      if (shown.cells || shown.glyphs) {
         page.glyphs.forEach((glyph) => {
           if (!glyphShown(glyph, flows)) return;
           const low = filter.mode === "mark" && filter.target === "glyph" && isLow(glyph.score);
@@ -487,10 +494,14 @@
           if (glyph.uncertain) color = "#b15e09";
           if (low) color = "#9f1239";
           if (glyph.id === selectedId) color = "#8a1c1c";
-          drawQuad(glyph.quad, color, glyph.id === selectedId ? unit * 2 : unit);
+          if (shown.cells && glyph.cell) {
+            drawQuad(glyph.cell, "#6d28d9", unit, true);
+          }
+          const labelBox = shown.glyphs ? glyph.quad : glyph.cell;
+          if (shown.glyphs) drawQuad(glyph.quad, color, glyph.id === selectedId ? unit * 2 : unit);
           const caption = glyphCaption(glyph, shown);
-          if (!caption.text && !caption.score) return;
-          const box = bounds(glyph.quad);
+          if ((!caption.text && !caption.score) || !labelBox) return;
+          const box = bounds(labelBox);
           const width = Math.max(16, box.right - box.left);
           const size = Math.max(12, Math.min(22, width * 0.72));
           let above = box.top - 4;
@@ -508,7 +519,7 @@
           if (roles()[flow.role] === false) return;
           const glyph = glyphMap().get(flow.glyph_ids[0]);
           if (!glyph || !glyphShown(glyph, flows)) return;
-          const box = bounds(glyph.quad);
+          const box = bounds(shown.glyphs ? glyph.quad : (glyph.cell || glyph.quad));
           paintText(String(index + 1), Math.max(2, box.left - unit * 10), box.top + unit * 8, "#1d4e89", Math.max(12, unit * 6));
         });
       }
@@ -537,7 +548,8 @@
       const stage = document.getElementById("stage");
       const rect = canvas.getBoundingClientRect();
       const scale = rect.width / canvas.width;
-      const [x, y] = centerOf(glyph.quad);
+      const focus = layers().glyphs ? glyph.quad : (glyph.cell || glyph.quad);
+      const [x, y] = centerOf(focus);
       stage.scrollTo({
         left: canvas.offsetLeft + x * scale - stage.clientWidth / 2,
         top: canvas.offsetTop + y * scale - stage.clientHeight / 2,
@@ -762,7 +774,12 @@
       const x = (event.clientX - rect.left) * (canvas.width / rect.width);
       const y = (event.clientY - rect.top) * (canvas.height / rect.height);
       const flows = flowOfGlyph();
-      const hit = [...page.glyphs].reverse().find((glyph) => glyphShown(glyph, flows) && pointInQuad(x, y, glyph.quad));
+      const shown = layers();
+      const hit = [...page.glyphs].reverse().find((glyph) => {
+        if (!glyphShown(glyph, flows)) return false;
+        if (shown.glyphs && pointInQuad(x, y, glyph.quad)) return true;
+        return shown.cells && glyph.cell && pointInQuad(x, y, glyph.cell);
+      });
       if (hit) selectGlyph(hit.id);
     });
 

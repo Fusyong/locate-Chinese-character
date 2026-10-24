@@ -22,6 +22,9 @@ def _draw_overlay(image: np.ndarray, page: Page) -> np.ndarray:
         cv2.polylines(canvas, [points], True, (160, 90, 20), 2)
     order = {glyph_id: str(index) for index, glyph_id in enumerate(_reading_ids(page), start=1)}
     for glyph in page.glyphs:
+        if glyph.cell is not None:
+            cell = np.array(glyph.cell, dtype=np.int32)
+            cv2.polylines(canvas, [cell], True, (160, 70, 150), 1)
         color = (20, 90, 180) if glyph.uncertain else (40, 130, 60)
         points = np.array(glyph.quad, dtype=np.int32)
         cv2.polylines(canvas, [points], True, color, 1)
@@ -97,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         default="book",
         choices=sorted(PROFILES),
-        help="版式：book、woodblock、manuscript",
+        help="版式：book、woodblock、manuscript、stele、modelbook",
     )
     locate_parser.add_argument("--out", required=True, help="输出目录")
     locate_parser.add_argument(

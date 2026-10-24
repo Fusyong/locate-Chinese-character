@@ -73,11 +73,20 @@ def parse_result(
 
 
 def _engine(profile: Profile) -> object:
-    key = (profile.use_cls, profile.max_side_len, float(profile.unclip_ratio))
+    key = (
+        profile.use_cls,
+        profile.max_side_len,
+        float(profile.unclip_ratio),
+        profile.ocr_version,
+        profile.det_model,
+        profile.use_dilation,
+        float(profile.box_thresh),
+    )
     engine = _ENGINES.get(key)
     if engine is None:
         try:
             from rapidocr import RapidOCR
+            from rapidocr.utils.typings import ModelType, OCRVersion
         except ImportError as exc:
             raise HanlocError('未安装识别依赖。请执行：pip install -e ".[ocr]"') from exc
         engine = RapidOCR(
@@ -88,6 +97,10 @@ def _engine(profile: Profile) -> object:
                 "Global.return_word_box": True,
                 "Global.max_side_len": profile.max_side_len,
                 "Det.unclip_ratio": profile.unclip_ratio,
+                "Det.box_thresh": profile.box_thresh,
+                "Det.use_dilation": profile.use_dilation,
+                "Det.ocr_version": OCRVersion(profile.ocr_version),
+                "Det.model_type": ModelType(profile.det_model),
             }
         )
         _ENGINES[key] = engine

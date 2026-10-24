@@ -100,6 +100,20 @@ def test_matching_count_copies_recognition_onto_ink_boxes():
     assert assigned[0].quad == glyphs[0].quad
 
 
+def test_ink_split_merges_a_close_fragment_and_keeps_a_separated_mark():
+    image = np.full((240, 80, 3), 255, np.uint8)
+    image[20:60, 20:55] = 0
+    image[80:92, 20:55] = 0
+    image[94:106, 20:55] = 0
+    image[126:166, 20:55] = 0
+    image[186:196, 20:40] = 0
+    quad = ((15.0, 10.0), (60.0, 10.0), (60.0, 220.0), (15.0, 220.0))
+    line = Line("line-1", quad, 0.0, text="一二三", score=0.4)
+    glyphs = ink_split(image, line, _Ids(), merge_fragments=True)
+    assert len(glyphs) == 4
+    assert [glyph.uncertain for glyph in glyphs] == [False, False, False, True]
+
+
 def test_ink_split_separates_three_blobs_and_marks_the_wide_one():
     image = np.full((200, 80, 3), 255, np.uint8)
     image[20:50, 20:50] = 0
@@ -135,6 +149,8 @@ def test_segment_line_snaps_shifted_priors_onto_the_ink():
     assert [glyph.score for glyph in glyphs] == [0.8, 0.4]
     assert _center(glyphs[0], 0) < 30
     assert 25 < _center(glyphs[1], 0) < 50
+    assert glyphs[0].cell == words[0].quad
+    assert glyphs[1].cell == words[1].quad
 
 
 def test_segment_line_tightens_a_single_character_to_its_ink():

@@ -37,7 +37,9 @@ def test_page_json_roundtrip():
     assert restored.flows[0].text == "甲乙"
     assert restored.glyphs[0].quad[0] == (0.0, 0.0)
     assert "correction" not in page_to_dict(page)["glyphs"][0]
+    assert "cell" not in page_to_dict(page)["glyphs"][0]
     assert restored.glyphs[0].correction is None
+    assert restored.glyphs[0].cell is None
 
 
 def test_correction_roundtrip_keeps_original_text():

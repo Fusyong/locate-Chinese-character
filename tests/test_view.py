@@ -76,6 +76,8 @@ def test_index_is_the_proofreading_page():
     assert "执行 OCR" in response.text
     assert "保存改订" in response.text
     assert "canvas" in response.text
+    assert 'value="stele"' in response.text
+    assert 'value="modelbook"' in response.text
 
 
 def test_images_open_in_filename_order():

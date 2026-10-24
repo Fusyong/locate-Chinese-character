@@ -1,4 +1,4 @@
-"""三种版式只差在检测参数上。单字框都按行内墨迹切开。"""
+"""版式只差在检测和切字参数上。"""
 
 from hanloc.types import Profile
 
@@ -34,10 +34,45 @@ MANUSCRIPT = Profile(
     split="ink",
 )
 
+# 列距稳定的碑、墓志。浅字拓片会反相，再按墨迹分列、列内切字。
+STELE = Profile(
+    name="stele",
+    reading="vertical_rtl",
+    rotate90=False,
+    use_cls=False,
+    max_side_len=2200,
+    unclip_ratio=1.2,
+    split="ink",
+    polarity="auto",
+    align_chars=False,
+    mark_marginalia=True,
+    mark_title=True,
+    locate_mode="columns",
+)
+
+# 法帖、信札、手卷。先去掉朱印，再按墨迹分列。连笔保持整块并标不确定。
+MODELBOOK = Profile(
+    name="modelbook",
+    reading="vertical_rtl",
+    rotate90=False,
+    use_cls=False,
+    max_side_len=2200,
+    unclip_ratio=1.3,
+    split="ink",
+    polarity="auto",
+    suppress_red=True,
+    align_chars=False,
+    mark_marginalia=True,
+    mark_title=True,
+    locate_mode="columns",
+)
+
 PROFILES = {
     BOOK.name: BOOK,
     WOODBLOCK.name: WOODBLOCK,
     MANUSCRIPT.name: MANUSCRIPT,
+    STELE.name: STELE,
+    MODELBOOK.name: MODELBOOK,
 }
 
 
