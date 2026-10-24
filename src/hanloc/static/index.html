@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>OCR 核对</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1917;
+      --muted: #57534e;
+      --line: #1d4e89;
+      --glyph: #2a6f4e;
+      --uncertain: #b15e09;
+      --low: #9f1239;
+      --selected: #8a1c1c;
+      --panel: #f5f4f1;
+      --stroke: #d6d3d1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background: #fff;
+    }
+    header {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--stroke);
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: end; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 8px 0 0; }
+    label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+    select, input, textarea, button { font: inherit; color: var(--ink); }
+    input[type="number"] { width: 88px; }
+    textarea, #edit-char { width: 100%; }
+    button {
+      background: var(--ink);
+      color: #fff;
+      border: 0;
+      padding: 6px 12px;
+      cursor: pointer;
+    }
+    button.secondary { background: #fff; color: var(--ink); border: 1px solid var(--stroke); }
+    button:disabled { opacity: 0.45; cursor: default; }
+    .layers label { flex-direction: row; align-items: center; gap: 4px; color: var(--ink); font-size: 14px; }
+    main { display: grid; grid-template-columns: 1fr 340px; min-height: calc(100vh - 150px); }
+    #stage { overflow: auto; padding: 16px; background: var(--panel); }
+    canvas { background: #fff; max-width: 100%; height: auto; }
+    aside { border-left: 1px solid var(--stroke); padding: 16px; overflow: auto; max-height: calc(100vh - 150px); }
+    aside h2 { font-size: 14px; margin: 16px 0 8px; }
+    #status, .hint { color: var(--muted); }
+    .hint { font-size: 13px; margin: 4px 0 0; }
+    #detail { display: grid; grid-template-columns: 72px 1fr; gap: 4px 8px; margin: 12px 0; }
+    #detail dt { color: var(--muted); }
+    #detail dd { margin: 0; }
+    #crop { max-width: 100%; background: var(--panel); margin-top: 8px; }
+    #queue, #flows { list-style: none; padding: 0; margin: 8px 0 0; }
+    #queue li, #flows li { padding: 6px 0; border-top: 1px solid var(--stroke); cursor: pointer; }
+    #queue li.hint, #flows li.hint { cursor: default; }
+    .role { color: var(--muted); font-size: 12px; }
+    .edited { color: var(--selected); }
+    .legend { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+    @media (max-width: 800px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-left: 0; border-top: 1px solid var(--stroke); max-height: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="row">
+      <h1>OCR 核对</h1>
+      <label>图片或 PDF
+        <input id="files" type="file" accept="image/*,.pdf,application/pdf" multiple>
+      </label>
+      <label>PDF 分辨率
+        <input id="dpi" type="number" min="72" max="600" step="1" value="300">
+      </label>
+      <button id="open" type="button">打开</button>
+      <button id="prev" class="secondary" type="button" disabled>上一页</button>
+      <button id="next" class="secondary" type="button" disabled>下一页</button>
+      <span id="page-label" class="hint"></span>
+    </div>
+    <div class="row">
+      <label>版式
+        <select id="profile">
+          <option value="book">图书 book</option>
+          <option value="woodblock">刻印本 woodblock</option>
+          <option value="manuscript">手写本 manuscript</option>
+        </select>
+      </label>
+      <label>版心
+        <select id="centerfold">
+          <option value="">沿用版式</option>
+          <option value="none">无</option>
+          <option value="gutter">中缝</option>
+          <option value="left">左缘</option>
+          <option value="right">右缘</option>
+        </select>
+      </label>
+      <button id="ocr" type="button" disabled>执行 OCR</button>
+      <button id="download" class="secondary" type="button" disabled>下载本页 JSON</button>
+    </div>
+    <div class="row layers">
+      <label><input id="show-lines" type="checkbox" checked>行框</label>
+      <label><input id="show-glyphs" type="checkbox" checked>单字框</label>
+      <label><input id="show-index" type="checkbox" checked>语流序号</label>
+      <label><input id="show-original" type="checkbox" checked>原文</label>
+      <label><input id="show-correction" type="checkbox" checked>改订</label>
+      <label><input id="show-score" type="checkbox" checked>置信度</label>
+      <label><input id="show-flows" type="checkbox" checked>语流列表</label>
+      <label><input id="role-body" type="checkbox" checked>正文</label>
+      <label><input id="role-commentary" type="checkbox" checked>夹注</label>
+      <label><input id="role-title" type="checkbox" checked>标题</label>
+      <label><input id="role-marginalia" type="checkbox" checked>旁注</label>
+      <label><input id="role-centerfold" type="checkbox" checked>版心</label>
+    </div>
+    <div class="row">
+      <label>置信度低于
+        <input id="threshold" type="number" min="0" max="1" step="0.05" value="0.8">
+      </label>
+      <label>对象
+        <select id="threshold-target">
+          <option value="glyph">单字</option>
+          <option value="line">行</option>
+        </select>
+      </label>
+      <label>方式
+        <select id="threshold-mode">
+          <option value="mark">标出</option>
+          <option value="only">只显示这些</option>
+          <option value="hide">隐藏这些</option>
+        </select>
+      </label>
+      <button id="apply" class="secondary" type="button">处理</button>
+      <span id="applied" class="hint">当前：全部显示</span>
+    </div>
+  </header>
+  <main>
+    <div id="stage"><canvas id="canvas"></canvas></div>
+    <aside>
+      <p id="status">打开图片或 PDF，再逐页执行 OCR。改订另存，不覆盖原来的识别结果。</p>
+      <p class="legend">蓝行框，绿单字，橙不确定，深红是低于阈值的项，红是当前选中。</p>
+      <dl id="detail">
+        <dt>原文</dt><dd id="original">—</dd>
+        <dt>置信度</dt><dd id="score">—</dd>
+        <dt>改订</dt>
+        <dd>
+          <input id="edit-char" type="text" maxlength="32" disabled>
+          <button id="save-char" type="button" disabled>保存改订</button>
+          <button id="clear-char" class="secondary" type="button" disabled>清除</button>
+        </dd>
+        <dt>本行原文</dt><dd id="line-text">—</dd>
+        <dt>行置信度</dt><dd id="line-score">—</dd>
+        <dt>行改订</dt>
+        <dd>
+          <textarea id="edit-line" rows="3" disabled></textarea>
+          <button id="save-line" type="button" disabled>保存行改订</button>
+          <button id="clear-line" class="secondary" type="button" disabled>清除</button>
+          <p class="hint">留空后保存表示改为空。清除则恢复为未改，原文仍在。</p>
+        </dd>
+      </dl>
+      <img id="crop" alt="" hidden>
+      <h2>待核</h2>
+      <ul id="queue"></ul>
+      <h2>语流</h2>
+      <p class="hint">语流原文来自识别。单字改订另列一行，不写回语流原文。</p>
+      <ul id="flows"></ul>
+    </aside>
+  </main>
+  <script>
+    const ROLE = {
+      body: "正文",
+      commentary: "夹注",
+      title: "标题",
+      marginalia: "旁注",
+      centerfold: "版心",
+    };
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const status = document.getElementById("status");
+    const image = new Image();
+
+    let sessionId = null;
+    let pageCount = 0;
+    let pageIndex = 0;
+    let page = null;
+    let labels = [];
+    let selectedId = null;
+    let loadToken = 0;
+    let imageUrl = "";
+    let filter = { mode: "all", threshold: 0.8, target: "glyph" };
+    let detailToken = "";
+
+    const layers = () => ({
+      lines: document.getElementById("show-lines").checked,
+      glyphs: document.getElementById("show-glyphs").checked,
+      index: document.getElementById("show-index").checked,
+      original: document.getElementById("show-original").checked,
+      correction: document.getElementById("show-correction").checked,
+      score: document.getElementById("show-score").checked,
+      flows: document.getElementById("show-flows").checked,
+    });
+
+    const roles = () => ({
+      body: document.getElementById("role-body").checked,
+      commentary: document.getElementById("role-commentary").checked,
+      title: document.getElementById("role-title").checked,
+      marginalia: document.getElementById("role-marginalia").checked,
+      centerfold: document.getElementById("role-centerfold").checked,
+    });
+
+    function glyphMap() {
+      const map = new Map();
+      if (page) page.glyphs.forEach((glyph) => map.set(glyph.id, glyph));
+      return map;
+    }
+
+    function flowOfGlyph() {
+      const map = new Map();
+      if (!page) return map;
+      page.flows.forEach((flow) => flow.glyph_ids.forEach((id) => map.set(id, flow)));
+      return map;
+    }
+
+    function selectedGlyph() {
+      if (!page || !selectedId) return null;
+      return page.glyphs.find((glyph) => glyph.id === selectedId) || null;
+    }
+
+    function selectedLine() {
+      const glyph = selectedGlyph();
+      if (!page) return null;
+      const lineId = glyph ? glyph.line_id : null;
+      if (!lineId) return null;
+      return page.lines.find((line) => line.id === lineId) || null;
+    }
+
+    async function errorText(response) {
+      try {
+        const body = await response.json();
+        if (typeof body.detail === "string") return body.detail;
+      } catch (_error) {
+        /* 非 JSON 错误沿用状态码 */
+      }
+      return `请求失败（${response.status}）`;
+    }
+
+    function setBusy(busy) {
+      document.getElementById("ocr").disabled = busy || !sessionId;
+      document.getElementById("open").disabled = busy;
+    }
+
+    async function openFiles() {
+      const input = document.getElementById("files");
+      if (!input.files.length) {
+        status.textContent = "请先选择图片或 PDF。";
+        return;
+      }
+      const dpi = Number(document.getElementById("dpi").value);
+      if (!(dpi >= 72 && dpi <= 600)) {
+        status.textContent = "PDF 分辨率需在 72 到 600 之间。";
+        return;
+      }
+      const body = new FormData();
+      for (const file of input.files) body.append("files", file);
+      body.set("dpi", String(dpi));
+      setBusy(true);
+      status.textContent = "正在打开…";
+      try {
+        const response = await fetch("/api/session", { method: "POST", body });
+        if (!response.ok) throw new Error(await errorText(response));
+        const data = await response.json();
+        sessionId = data.session_id;
+        pageCount = data.pages;
+        labels = data.labels;
+        page = null;
+        selectedId = null;
+        filter = { mode: "all", threshold: Number(document.getElementById("threshold").value) || 0.8, target: "glyph" };
+        document.getElementById("applied").textContent = "当前：全部显示";
+        document.getElementById("ocr").disabled = false;
+        await showPage(0);
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function showPage(index) {
+      const token = ++loadToken;
+      pageIndex = index;
+      selectedId = null;
+      detailToken = "";
+      const response = await fetch(`/api/session/${sessionId}/pages/${index}`);
+      if (!response.ok) {
+        status.textContent = await errorText(response);
+        return;
+      }
+      const data = await response.json();
+      if (token !== loadToken) return;
+      page = data.page;
+      const picture = await fetch(`/api/session/${sessionId}/pages/${index}/image`);
+      if (!picture.ok) {
+        status.textContent = await errorText(picture);
+        return;
+      }
+      if (imageUrl) URL.revokeObjectURL(imageUrl);
+      imageUrl = URL.createObjectURL(await picture.blob());
+      image.onload = () => {
+        if (token !== loadToken) return;
+        draw();
+      };
+      image.src = imageUrl;
+      updatePager();
+      refreshQueue();
+      refreshFlows();
+      syncDetail(true);
+      if (!page) status.textContent = "这一页还没有识别。点「执行 OCR」后再核对。";
+      else status.textContent = `本页 ${page.glyphs.length} 个字，${page.lines.length} 行。`;
+    }
+
+    function updatePager() {
+      const label = labels[pageIndex] || "";
+      document.getElementById("page-label").textContent = pageCount
+        ? `第 ${pageIndex + 1} / ${pageCount} 页 ${label}`
+        : "";
+      document.getElementById("prev").disabled = pageIndex <= 0;
+      document.getElementById("next").disabled = pageIndex >= pageCount - 1;
+      document.getElementById("download").disabled = !page;
+      document.getElementById("ocr").disabled = !sessionId;
+    }
+
+    function hasEdits(value) {
+      return value.glyphs.some((glyph) => glyph.correction != null)
+        || value.lines.some((line) => line.correction != null);
+    }
+
+    async function runOcr() {
+      if (!sessionId) return;
+      if (page) {
+        const message = hasEdits(page)
+          ? "重新识别会换掉本页结果，已填写的改订也会清掉。继续？"
+          : "重新识别会换掉本页的识别结果。继续？";
+        if (!confirm(message)) return;
+      }
+      const body = new FormData();
+      body.set("profile", document.getElementById("profile").value);
+      body.set("centerfold", document.getElementById("centerfold").value);
+      setBusy(true);
+      status.textContent = "正在识别这一页…";
+      try {
+        const response = await fetch(`/api/session/${sessionId}/pages/${pageIndex}/ocr`, {
+          method: "POST",
+          body,
+        });
+        if (!response.ok) throw new Error(await errorText(response));
+        const data = await response.json();
+        page = data.page;
+        selectedId = null;
+        detailToken = "";
+        status.textContent = `识别完成。本页 ${page.glyphs.length} 个字。`;
+        updatePager();
+        refreshQueue();
+        refreshFlows();
+        syncDetail(true);
+        draw();
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function isLow(score) {
+      if (score === null || score === undefined) return true;
+      return Number(score) < filter.threshold;
+    }
+
+    function eligible(glyph, flows) {
+      const flow = flows.get(glyph.id);
+      if (!flow) return true;
+      return roles()[flow.role] !== false;
+    }
+
+    function glyphShown(glyph, flows) {
+      if (!eligible(glyph, flows)) return glyph.id === selectedId;
+      if (glyph.id === selectedId) return true;
+      if (filter.target !== "glyph" || filter.mode === "all" || filter.mode === "mark") return true;
+      const low = isLow(glyph.score);
+      return filter.mode === "only" ? low : !low;
+    }
+
+    function lineShown(line) {
+      if (selectedLine() && line.id === selectedLine().id) return true;
+      if (filter.target !== "line" || filter.mode === "all" || filter.mode === "mark") return true;
+      const low = isLow(line.score);
+      return filter.mode === "only" ? low : !low;
+    }
+
+    function centerOf(quad) {
+      const point = quad.reduce((sum, item) => [sum[0] + item[0], sum[1] + item[1]], [0, 0]);
+      return [point[0] / quad.length, point[1] / quad.length];
+    }
+
+    function drawQuad(quad, color, width) {
+      ctx.beginPath();
+      ctx.moveTo(quad[0][0], quad[0][1]);
+      for (let i = 1; i < quad.length; i += 1) ctx.lineTo(quad[i][0], quad[i][1]);
+      ctx.closePath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.stroke();
+    }
+
+    function paintText(text, x, y, color, size) {
+      ctx.font = `${size}px "Microsoft YaHei", sans-serif`;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#fff";
+      ctx.strokeText(text, x, y);
+      ctx.fillStyle = color;
+      ctx.fillText(text, x, y);
+    }
+
+    function bounds(quad) {
+      const xs = quad.map((point) => point[0]);
+      const ys = quad.map((point) => point[1]);
+      return {
+        left: Math.min(...xs),
+        right: Math.max(...xs),
+        top: Math.min(...ys),
+        bottom: Math.max(...ys),
+      };
+    }
+
+    function glyphCaption(glyph, shown) {
+      const edited = glyph.correction != null;
+      const correction = edited ? (glyph.correction === "" ? "∅" : glyph.correction) : "";
+      let text = "";
+      if (glyph.id === selectedId && shown.original && shown.correction && edited && glyph.char) {
+        text = `${glyph.char}→${correction}`;
+      } else if (shown.correction && edited) {
+        text = correction;
+      } else if (shown.original && glyph.char) {
+        text = glyph.char;
+      }
+      const score = shown.score && glyph.score != null ? Number(glyph.score).toFixed(2) : "";
+      return { text, score };
+    }
+
+    function draw() {
+      if (!image.naturalWidth) return;
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      ctx.drawImage(image, 0, 0);
+      if (!page) return;
+      const shown = layers();
+      const flows = flowOfGlyph();
+      const unit = Math.max(2, canvas.width / 900);
+      if (shown.lines) {
+        page.lines.forEach((line) => {
+          if (!lineShown(line)) return;
+          const low = filter.mode === "mark" && filter.target === "line" && isLow(line.score);
+          const selected = selectedLine() && line.id === selectedLine().id;
+          const box = bounds(line.quad);
+          drawQuad(line.quad, selected ? "#8a1c1c" : low ? "#9f1239" : "#1d4e89", selected ? unit * 2 : unit);
+          const lineGlyphs = page.glyphs.filter((glyph) => glyph.line_id === line.id);
+          const hasChar = lineGlyphs.some((glyph) => glyph.char);
+          if (shown.original && line.text && !hasChar) {
+            paintText(line.text, box.left, box.top - 4, "#1d4e89", Math.max(14, unit * 7));
+          }
+          if (shown.correction && line.correction != null) {
+            const text = line.correction === "" ? "行∅" : line.correction;
+            paintText(text, box.left, box.bottom + unit * 8, "#8a1c1c", Math.max(14, unit * 7));
+          }
+        });
+      }
+      if (shown.glyphs) {
+        page.glyphs.forEach((glyph) => {
+          if (!glyphShown(glyph, flows)) return;
+          const low = filter.mode === "mark" && filter.target === "glyph" && isLow(glyph.score);
+          let color = "#2a6f4e";
+          if (glyph.uncertain) color = "#b15e09";
+          if (low) color = "#9f1239";
+          if (glyph.id === selectedId) color = "#8a1c1c";
+          drawQuad(glyph.quad, color, glyph.id === selectedId ? unit * 2 : unit);
+          const caption = glyphCaption(glyph, shown);
+          if (!caption.text && !caption.score) return;
+          const box = bounds(glyph.quad);
+          const width = Math.max(16, box.right - box.left);
+          const size = Math.max(12, Math.min(22, width * 0.72));
+          let above = box.top - 4;
+          if (caption.text) {
+            paintText(caption.text, box.left, above, color, size);
+            above -= size + 2;
+          }
+          if (caption.score) {
+            paintText(caption.score, box.left, above, color, Math.max(10, Math.min(13, width * 0.28)));
+          }
+        });
+      }
+      if (shown.index) {
+        page.flows.forEach((flow, index) => {
+          if (roles()[flow.role] === false) return;
+          const glyph = glyphMap().get(flow.glyph_ids[0]);
+          if (!glyph || !glyphShown(glyph, flows)) return;
+          const box = bounds(glyph.quad);
+          paintText(String(index + 1), Math.max(2, box.left - unit * 10), box.top + unit * 8, "#1d4e89", Math.max(12, unit * 6));
+        });
+      }
+    }
+
+    function pointInQuad(x, y, quad) {
+      let inside = false;
+      for (let i = 0, j = quad.length - 1; i < quad.length; j = i, i += 1) {
+        const xi = quad[i][0];
+        const yi = quad[i][1];
+        const xj = quad[j][0];
+        const yj = quad[j][1];
+        const intersect = (yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    function selectGlyph(id) {
+      selectedId = id;
+      detailToken = "";
+      syncDetail(true);
+      draw();
+      const glyph = selectedGlyph();
+      if (!glyph) return;
+      const stage = document.getElementById("stage");
+      const rect = canvas.getBoundingClientRect();
+      const scale = rect.width / canvas.width;
+      const [x, y] = centerOf(glyph.quad);
+      stage.scrollTo({
+        left: canvas.offsetLeft + x * scale - stage.clientWidth / 2,
+        top: canvas.offsetTop + y * scale - stage.clientHeight / 2,
+        behavior: "smooth",
+      });
+    }
+
+    function syncDetail(force) {
+      const token = `${pageIndex}|${selectedId}`;
+      if (!force && token === detailToken) return;
+      detailToken = token;
+      const glyph = selectedGlyph();
+      const line = selectedLine();
+      document.getElementById("original").textContent = glyph && glyph.char ? glyph.char : "—";
+      document.getElementById("score").textContent = glyph && glyph.score != null ? Number(glyph.score).toFixed(2) : "—";
+      document.getElementById("edit-char").value = glyph && glyph.correction != null ? glyph.correction : "";
+      document.getElementById("edit-char").disabled = !glyph;
+      document.getElementById("save-char").disabled = !glyph;
+      document.getElementById("clear-char").disabled = !glyph || glyph.correction == null;
+      document.getElementById("line-text").textContent = line && line.text ? line.text : "—";
+      document.getElementById("line-score").textContent = line && line.score != null ? Number(line.score).toFixed(2) : "—";
+      document.getElementById("edit-line").value = line && line.correction != null ? line.correction : "";
+      document.getElementById("edit-line").disabled = !line;
+      document.getElementById("save-line").disabled = !line;
+      document.getElementById("clear-line").disabled = !line || line.correction == null;
+      const crop = document.getElementById("crop");
+      if (!glyph) {
+        crop.hidden = true;
+        crop.removeAttribute("src");
+        return;
+      }
+      crop.hidden = false;
+      crop.src = `/api/crop?session_id=${sessionId}&page_index=${pageIndex}&glyph_id=${encodeURIComponent(glyph.id)}`;
+    }
+
+    async function saveCorrection(kind, id, correction) {
+      const response = await fetch(`/api/session/${sessionId}/pages/${pageIndex}/correction`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, id, correction }),
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+      return response.json();
+    }
+
+    async function saveGlyph(clear) {
+      const glyph = selectedGlyph();
+      if (!glyph) return;
+      const correction = clear ? null : document.getElementById("edit-char").value;
+      try {
+        const body = await saveCorrection("glyph", glyph.id, correction);
+        if (body.char !== glyph.char) throw new Error("原文被改动了，已停止。");
+        if (body.correction == null) delete glyph.correction;
+        else glyph.correction = body.correction;
+        status.textContent = clear ? "已清除改订，原文仍在。" : "已保存改订，原文未改。";
+        detailToken = "";
+        syncDetail(true);
+        refreshQueue();
+        refreshFlows();
+        draw();
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    }
+
+    async function saveLine(clear) {
+      const line = selectedLine();
+      if (!line) return;
+      const correction = clear ? null : document.getElementById("edit-line").value;
+      try {
+        const body = await saveCorrection("line", line.id, correction);
+        if (body.text !== line.text) throw new Error("行原文被改动了，已停止。");
+        if (body.correction == null) delete line.correction;
+        else line.correction = body.correction;
+        status.textContent = clear ? "已清除行改订，行原文仍在。" : "已保存行改订，行原文未改。";
+        detailToken = "";
+        syncDetail(true);
+        refreshQueue();
+        draw();
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    }
+
+    function addItem(list, text, onClick, className) {
+      const item = document.createElement("li");
+      item.textContent = text;
+      if (className) item.className = className;
+      if (onClick) item.onclick = onClick;
+      list.append(item);
+    }
+
+    function refreshQueue() {
+      const queue = document.getElementById("queue");
+      queue.replaceChildren();
+      if (!page || filter.mode === "all") {
+        addItem(queue, "点「处理」后，这里列出低于阈值的项。没有置信度的也算在内。", null, "hint");
+        return;
+      }
+      const flows = flowOfGlyph();
+      if (filter.target === "line") {
+        const lines = page.lines.filter((line) => isLow(line.score));
+        if (!lines.length) {
+          addItem(queue, "没有低于阈值的行。", null, "hint");
+          return;
+        }
+        lines.forEach((line) => {
+          const score = line.score == null ? "无" : Number(line.score).toFixed(2);
+          const text = line.text || line.id;
+          addItem(queue, `${text}  ${score}`, () => {
+            const glyph = page.glyphs.find((item) => item.line_id === line.id);
+            if (glyph) selectGlyph(glyph.id);
+          });
+        });
+        return;
+      }
+      const glyphs = page.glyphs.filter((glyph) => eligible(glyph, flows) && isLow(glyph.score));
+      if (!glyphs.length) {
+        addItem(queue, "没有低于阈值的字。", null, "hint");
+        return;
+      }
+      glyphs.forEach((glyph) => {
+        const score = glyph.score == null ? "无" : Number(glyph.score).toFixed(2);
+        const edited = glyph.correction != null ? " 已改" : "";
+        addItem(queue, `${glyph.char || "（空）"}  ${score}${edited}`, () => selectGlyph(glyph.id));
+      });
+    }
+
+    function revisedFlow(flow, glyphs) {
+      let edited = false;
+      let text = "";
+      flow.glyph_ids.forEach((id) => {
+        const glyph = glyphs.get(id);
+        if (!glyph) return;
+        if (glyph.correction != null) {
+          edited = true;
+          text += glyph.correction;
+        } else {
+          text += glyph.char || "";
+        }
+      });
+      return edited ? text : null;
+    }
+
+    function refreshFlows() {
+      const list = document.getElementById("flows");
+      list.replaceChildren();
+      const shown = layers();
+      if (!page || !shown.flows) return;
+      const glyphs = glyphMap();
+      const visible = roles();
+      page.flows.forEach((flow, index) => {
+        if (visible[flow.role] === false) return;
+        const item = document.createElement("li");
+        const role = document.createElement("div");
+        role.className = "role";
+        role.textContent = `${index + 1}  ${ROLE[flow.role] || flow.role}`;
+        const text = document.createElement("div");
+        text.textContent = flow.text || "（无原文）";
+        item.append(role, text);
+        const revised = revisedFlow(flow, glyphs);
+        if (revised !== null && revised !== flow.text) {
+          const edited = document.createElement("div");
+          edited.className = "edited";
+          edited.textContent = `改订 ${revised === "" ? "∅" : revised}`;
+          item.append(edited);
+        }
+        item.onclick = () => {
+          if (flow.glyph_ids[0]) selectGlyph(flow.glyph_ids[0]);
+        };
+        list.append(item);
+      });
+    }
+
+    function applyThreshold() {
+      const threshold = Number(document.getElementById("threshold").value);
+      if (!(threshold >= 0 && threshold <= 1)) {
+        status.textContent = "置信度阈值需在 0 到 1 之间。";
+        return;
+      }
+      filter = {
+        mode: document.getElementById("threshold-mode").value,
+        threshold,
+        target: document.getElementById("threshold-target").value,
+      };
+      const modeText = { mark: "标出", only: "只显示", hide: "隐藏" }[filter.mode];
+      const targetText = filter.target === "line" ? "行" : "单字";
+      document.getElementById("applied").textContent = `当前：${modeText}低于 ${threshold.toFixed(2)} 的${targetText}`;
+      refreshQueue();
+      draw();
+      if (!page) {
+        status.textContent = "还没有识别结果。";
+        return;
+      }
+      const flows = flowOfGlyph();
+      const pool = filter.target === "line"
+        ? page.lines
+        : page.glyphs.filter((glyph) => eligible(glyph, flows));
+      const low = pool.filter((item) => isLow(item.score)).length;
+      status.textContent = `${targetText} ${pool.length} 个，低于 ${threshold.toFixed(2)} 的有 ${low} 个。`;
+    }
+
+    async function downloadPage() {
+      if (!sessionId || !page) return;
+      const response = await fetch(`/api/session/${sessionId}/pages/${pageIndex}`);
+      if (!response.ok) {
+        status.textContent = await errorText(response);
+        return;
+      }
+      const data = await response.json();
+      const blob = new Blob([JSON.stringify(data.page, null, 2)], { type: "application/json" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `page-${pageIndex + 1}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    }
+
+    canvas.addEventListener("click", (event) => {
+      if (!page) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = (event.clientX - rect.left) * (canvas.width / rect.width);
+      const y = (event.clientY - rect.top) * (canvas.height / rect.height);
+      const flows = flowOfGlyph();
+      const hit = [...page.glyphs].reverse().find((glyph) => glyphShown(glyph, flows) && pointInQuad(x, y, glyph.quad));
+      if (hit) selectGlyph(hit.id);
+    });
+
+    document.getElementById("open").onclick = openFiles;
+    document.getElementById("ocr").onclick = runOcr;
+    document.getElementById("prev").onclick = () => showPage(pageIndex - 1);
+    document.getElementById("next").onclick = () => showPage(pageIndex + 1);
+    document.getElementById("download").onclick = downloadPage;
+    document.getElementById("apply").onclick = applyThreshold;
+    document.getElementById("save-char").onclick = () => saveGlyph(false);
+    document.getElementById("clear-char").onclick = () => saveGlyph(true);
+    document.getElementById("save-line").onclick = () => saveLine(false);
+    document.getElementById("clear-line").onclick = () => saveLine(true);
+    document.querySelectorAll(".layers input").forEach((input) => {
+      input.onchange = () => {
+        refreshFlows();
+        draw();
+      };
+    });
+    refreshQueue();
+  </script>
+</body>
+</html>

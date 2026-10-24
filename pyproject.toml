@@ -1,0 +1,52 @@
+[project]
+name = "hanloc"
+version = "0.1.0"
+description = "定位页面上的汉字，排成语流，并按外框裁字。"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "opencv-python-headless",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "rapidocr",
+    "onnxruntime",
+]
+view = [
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "pypdfium2",
+]
+dev = [
+    "pytest",
+    "ruff",
+    "httpx",
+]
+
+[project.scripts]
+hanloc = "hanloc.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hanloc = ["static/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "sample: 需要 samples/ 中的书页和 OCR 模型，不进默认测试",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
