@@ -59,8 +59,6 @@ class Line:
     angle_deg: float
     text: str | None = None
     score: float | None = None
-    # 核对时的改订。None 表示未改；空字符串表示改为空。不替换 text。
-    correction: str | None = None
 
 
 @dataclass
@@ -78,6 +76,8 @@ class Glyph:
     correction: str | None = None
     # 识别回推的字身格。没有这项时为 None。
     cell: Quad | None = None
+    # 书法单字模型的候选。空表示没有做二次识别。不替换 char。
+    candidates: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass
@@ -123,6 +123,34 @@ def _correction_json(value: str | None) -> dict[str, str]:
     return {"correction": value}
 
 
+def _candidates_json(
+    candidates: tuple[tuple[str, float], ...],
+) -> dict[str, list[dict[str, str | float]]]:
+    if not candidates:
+        return {}
+    return {
+        "candidates": [
+            {"char": char, "score": float(score)} for char, score in candidates
+        ]
+    }
+
+
+def _candidates_from_json(item: dict[str, Any]) -> tuple[tuple[str, float], ...]:
+    raw = item.get("candidates")
+    if not isinstance(raw, list):
+        return ()
+    parsed: list[tuple[str, float]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        char = entry.get("char")
+        if not isinstance(char, str) or char == "":
+            continue
+        score = entry.get("score")
+        parsed.append((char, 0.0 if score is None else float(score)))
+    return tuple(parsed)
+
+
 def _correction_from_json(item: dict[str, Any]) -> str | None:
     if "correction" not in item or item["correction"] is None:
         return None
@@ -141,7 +169,6 @@ def page_to_dict(page: Page) -> dict[str, Any]:
                 "angle_deg": float(line.angle_deg),
                 "text": line.text,
                 "score": _maybe_float(line.score),
-                **_correction_json(line.correction),
             }
             for line in page.lines
         ],
@@ -156,6 +183,7 @@ def page_to_dict(page: Page) -> dict[str, Any]:
                 "uncertain": glyph.uncertain,
                 **_correction_json(glyph.correction),
                 **_cell_json(glyph.cell),
+                **_candidates_json(glyph.candidates),
             }
             for glyph in page.glyphs
         ],
@@ -180,7 +208,6 @@ def page_from_dict(data: dict[str, Any]) -> Page:
             angle_deg=float(item.get("angle_deg", angle_deg(as_quad(item["quad"])))),
             text=item.get("text"),
             score=None if item.get("score") is None else float(item["score"]),
-            correction=_correction_from_json(item),
         )
         for item in data.get("lines", [])
     ]
@@ -195,6 +222,7 @@ def page_from_dict(data: dict[str, Any]) -> Page:
             uncertain=bool(item.get("uncertain", False)),
             correction=_correction_from_json(item),
             cell=None if not item.get("cell") else as_quad(item["cell"]),
+            candidates=_candidates_from_json(item),
         )
         for item in data.get("glyphs", [])
     ]

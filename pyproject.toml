@@ -18,6 +18,11 @@ view = [
     "uvicorn",
     "python-multipart",
     "pypdfium2",
+    "opencc-python-reimplemented",
+]
+calligraphy = [
+    "torch",
+    "torchvision",
 ]
 dev = [
     "pytest",

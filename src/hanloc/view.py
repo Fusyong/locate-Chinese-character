@@ -15,12 +15,16 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from hanloc.crop import crop_glyph
+from hanloc.edit import edit_glyphs
 from hanloc.measure import typical_ink_width
 from hanloc.pipeline import locate
+from hanloc.prep import prepare_page
 from hanloc.profiles import PROFILES
+from hanloc.reread import reread_glyphs
 from hanloc.review import set_correction
 from hanloc.scale import expected_char_px, long_side_for_char
-from hanloc.types import Glyph, Line, Page, page_to_dict
+from hanloc.traditional import to_traditional
+from hanloc.types import HanlocError, Page, page_from_dict, page_to_dict
 
 app = FastAPI(title="hanloc")
 _STATIC = Path(__file__).parent / "static"
@@ -248,6 +252,10 @@ def read_image(session_id: str, index: int) -> Response:
     return Response(content=encoded.tobytes(), media_type="image/jpeg")
 
 
+def _asked(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "on", "yes"}
+
+
 def _max_side(char_px: str, page_long: int) -> int | None:
     text = char_px.strip()
     if not text:
@@ -268,6 +276,7 @@ def ocr_page(
     profile: str = Form("book"),
     centerfold: str = Form(""),
     char_px: str = Form(""),
+    calligraphy: str = Form(""),
 ) -> dict[str, object]:
     if profile not in PROFILES:
         raise HTTPException(status_code=400, detail=f"未知版式：{profile}")
@@ -281,9 +290,12 @@ def ocr_page(
     if side is not None:
         chosen = replace(chosen, max_side_len=side)
     try:
-        slot.page = locate(image, chosen)
+        page = locate(image, chosen)
+        if _asked(calligraphy):
+            reread_glyphs(prepare_page(image, chosen), page.glyphs)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    slot.page = page
     page_long = max(int(image.shape[0]), int(image.shape[1]))
     if char_px.strip():
         slot.expected_px = int(round(float(char_px)))
@@ -298,6 +310,20 @@ def ocr_page(
     return {"page": page_to_dict(slot.page), "measure": _measure(slot)}
 
 
+@app.post("/api/traditional")
+def traditional(body: dict[str, Any] = Body(...)) -> dict[str, str]:
+    text = body.get("text")
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="需要 text")
+    if len(text) > 32:
+        raise HTTPException(status_code=400, detail="改订超过 32 字")
+    try:
+        converted = to_traditional(text)
+    except HanlocError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"text": converted}
+
+
 @app.patch("/api/session/{session_id}/pages/{index}/correction")
 def correct_page(
     session_id: str,
@@ -310,8 +336,8 @@ def correct_page(
         raise HTTPException(status_code=409, detail="这一页还没有识别")
     kind = body.get("kind")
     item_id = body.get("id")
-    if not isinstance(kind, str) or not isinstance(item_id, str) or "correction" not in body:
-        raise HTTPException(status_code=400, detail="需要 kind、id 和 correction")
+    if kind != "glyph" or not isinstance(item_id, str) or "correction" not in body:
+        raise HTTPException(status_code=400, detail="只能改订单字，需要 id 和 correction")
     raw = body.get("correction")
     if raw is not None and not isinstance(raw, str):
         raise HTTPException(status_code=400, detail="correction 需为字符串或 null")
@@ -321,23 +347,47 @@ def correct_page(
         raise HTTPException(status_code=404, detail="没有这一项") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if isinstance(item, Glyph):
-        return {
-            "kind": "glyph",
-            "id": item.id,
-            "char": item.char,
-            "score": item.score,
-            "correction": item.correction,
-        }
-    if isinstance(item, Line):
-        return {
-            "kind": "line",
-            "id": item.id,
-            "text": item.text,
-            "score": item.score,
-            "correction": item.correction,
-        }
-    raise HTTPException(status_code=400, detail="无法改订")
+    return {
+        "kind": "glyph",
+        "id": item.id,
+        "char": item.char,
+        "score": item.score,
+        "correction": item.correction,
+    }
+
+
+@app.post("/api/session/{session_id}/pages/{index}/edit")
+def edit_page(session_id: str, index: int, body: dict[str, Any] = Body(...)) -> dict[str, object]:
+    document = _require(session_id)
+    slot = _slot(document, index)
+    if slot.page is None:
+        raise HTTPException(status_code=409, detail="这一页还没有识别")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="需要操作说明")
+    try:
+        selected = edit_glyphs(slot.page, body)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="没有这个字") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"page": page_to_dict(slot.page), "ids": selected}
+
+
+@app.put("/api/session/{session_id}/pages/{index}")
+def replace_page(
+    session_id: str,
+    index: int,
+    body: dict[str, Any] = Body(...),
+) -> dict[str, object]:
+    document = _require(session_id)
+    slot = _slot(document, index)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="需要页面数据")
+    try:
+        slot.page = page_from_dict(body)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="页面数据无法读入") from exc
+    return {"page": page_to_dict(slot.page)}
 
 
 @app.get("/api/crop")

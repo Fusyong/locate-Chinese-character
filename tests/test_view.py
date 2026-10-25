@@ -75,6 +75,8 @@ def test_index_is_the_proofreading_page():
     assert response.status_code == 200
     assert "执行 OCR" in response.text
     assert "保存改订" in response.text
+    text = response.text
+    assert text.index("保存改订") < text.index("简转繁") < text.index("清除")
     assert "canvas" in response.text
     assert 'value="book">现代本' in response.text
     assert 'value="woodblock">刻本' in response.text
@@ -85,6 +87,9 @@ def test_index_is_the_proofreading_page():
     assert 'id="char-px"' in response.text
     assert "字高（行列窄边）" in response.text
     assert 'id="measure"' in response.text
+    assert "二次识别书法单字" in response.text
+    checkbox = response.text.split('id="calligraphy"', 1)[1].split(">", 1)[0]
+    assert "checked" not in checkbox
 
 
 def test_images_open_in_filename_order():
@@ -139,13 +144,15 @@ def test_correction_keeps_original_recognition():
     assert again["char"] == "测"
     assert "correction" not in again
 
-    blank = client.patch(
+    rejected = client.patch(
         f"/api/session/{session_id}/pages/0/correction",
-        json={"kind": "line", "id": "line-1", "correction": ""},
+        json={"kind": "line", "id": "line-1", "correction": "改"},
     )
-    assert blank.status_code == 200
-    assert blank.json()["text"] == "测"
-    assert blank.json()["correction"] == ""
+    assert rejected.status_code == 400
+    assert "单字" in rejected.json()["detail"]
+    kept = client.get(f"/api/session/{session_id}/pages/0").json()["page"]
+    assert kept["lines"][0]["text"] == "测"
+    assert "correction" not in kept["lines"][0]
 
     crop = client.get(
         "/api/crop",
@@ -153,6 +160,39 @@ def test_correction_keeps_original_recognition():
     )
     assert crop.status_code == 200
     assert crop.headers["content-type"] == "image/png"
+
+
+def test_edit_and_replace_round_trip():
+    client = _client()
+    opened = client.post(
+        "/api/session",
+        files={"files": ("page.png", io.BytesIO(_png_bytes()), "image/png")},
+    )
+    session_id = opened.json()["session_id"]
+    missing = client.post(
+        f"/api/session/{session_id}/pages/0/edit",
+        json={"op": "delete", "ids": ["glyph-1"]},
+    )
+    assert missing.status_code == 409
+
+    attach_page(session_id, 0, page_from_dict(_sample_page()))
+    deleted = client.post(
+        f"/api/session/{session_id}/pages/0/edit",
+        json={"op": "delete", "ids": ["glyph-1"]},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["ids"] == []
+    assert deleted.json()["page"]["glyphs"] == []
+
+    restored = client.put(f"/api/session/{session_id}/pages/0", json=_sample_page())
+    assert restored.status_code == 200
+    assert restored.json()["page"]["glyphs"][0]["char"] == "测"
+
+    unknown = client.post(
+        f"/api/session/{session_id}/pages/0/edit",
+        json={"op": "split", "id": "missing"},
+    )
+    assert unknown.status_code == 404
 
 
 def test_unknown_upload_is_rejected():
@@ -200,6 +240,108 @@ def test_page_json_used_by_download_contains_both_texts():
     encoded = json.dumps(payload, ensure_ascii=False)
     assert '"char": "测"' in encoded
     assert '"correction": "正"' in encoded
+
+
+def test_ocr_skips_calligraphy_unless_asked(monkeypatch):
+    client = _client()
+    opened = client.post(
+        "/api/session",
+        files={"files": ("page.png", io.BytesIO(_png_bytes()), "image/png")},
+    )
+    session_id = opened.json()["session_id"]
+
+    def fail(image, glyphs):
+        raise AssertionError("未勾选时不应二次识别")
+
+    monkeypatch.setattr("hanloc.view.locate", lambda image, profile: page_from_dict(_sample_page()))
+    monkeypatch.setattr("hanloc.view.reread_glyphs", fail)
+    response = client.post(
+        f"/api/session/{session_id}/pages/0/ocr",
+        data={"profile": "book"},
+    )
+    assert response.status_code == 200
+    glyph = response.json()["page"]["glyphs"][0]
+    assert glyph["char"] == "测"
+    assert "candidates" not in glyph
+
+
+def test_ocr_adds_calligraphy_candidates_without_replacing_char(monkeypatch):
+    client = _client()
+    opened = client.post(
+        "/api/session",
+        files={"files": ("page.png", io.BytesIO(_png_bytes()), "image/png")},
+    )
+    session_id = opened.json()["session_id"]
+
+    def fake(image, glyphs):
+        assert image.shape[0] > 0
+        for glyph in glyphs:
+            assert glyph.char == "测"
+            glyph.candidates = (("书", 0.81), ("画", 0.05))
+
+    monkeypatch.setattr("hanloc.view.locate", lambda image, profile: page_from_dict(_sample_page()))
+    monkeypatch.setattr("hanloc.view.reread_glyphs", fake)
+    response = client.post(
+        f"/api/session/{session_id}/pages/0/ocr",
+        data={"profile": "book", "calligraphy": "1"},
+    )
+    assert response.status_code == 200
+    glyph = response.json()["page"]["glyphs"][0]
+    assert glyph["char"] == "测"
+    assert glyph["candidates"] == [
+        {"char": "书", "score": 0.81},
+        {"char": "画", "score": 0.05},
+    ]
+
+
+def test_calligraphy_failure_keeps_the_previous_page(monkeypatch):
+    from hanloc.types import HanlocError
+
+    client = _client()
+    opened = client.post(
+        "/api/session",
+        files={"files": ("page.png", io.BytesIO(_png_bytes()), "image/png")},
+    )
+    session_id = opened.json()["session_id"]
+    attach_page(session_id, 0, page_from_dict(_sample_page()))
+
+    def boom(image, glyphs):
+        raise HanlocError('未安装书法识别依赖。请执行：pip install -e ".[calligraphy]"')
+
+    monkeypatch.setattr("hanloc.view.locate", lambda image, profile: page_from_dict(_sample_page()))
+    monkeypatch.setattr("hanloc.view.reread_glyphs", boom)
+    response = client.post(
+        f"/api/session/{session_id}/pages/0/ocr",
+        data={"profile": "book", "calligraphy": "1"},
+    )
+    assert response.status_code == 400
+    assert "calligraphy" in response.json()["detail"]
+    glyph = client.get(f"/api/session/{session_id}/pages/0").json()["page"]["glyphs"][0]
+    assert glyph["char"] == "测"
+    assert "candidates" not in glyph
+
+
+def test_traditional_converts_the_field():
+    pytest.importorskip("opencc")
+    response = _client().post("/api/traditional", json={"text": "书法"})
+    assert response.status_code == 200
+    assert response.json()["text"] == "書法"
+
+
+def test_traditional_rejects_a_missing_field():
+    response = _client().post("/api/traditional", json={})
+    assert response.status_code == 400
+
+
+def test_traditional_reports_a_missing_converter(monkeypatch):
+    def missing():
+        raise ImportError("no opencc")
+
+    monkeypatch.setattr("hanloc.traditional._CONVERTER", None)
+    monkeypatch.setattr("hanloc.traditional._load", missing)
+    response = _client().post("/api/traditional", json={"text": "书"})
+    assert response.status_code == 400
+    assert "OpenCC" in response.json()["detail"]
 
 
 def test_char_height_must_be_a_pixel_count():

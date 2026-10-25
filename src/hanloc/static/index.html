@@ -19,14 +19,18 @@
       --stroke: #d6d3d1;
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
+      display: flex;
+      flex-direction: column;
       font: 15px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
       color: var(--ink);
       background: #fff;
     }
     header {
       display: flex;
+      flex: none;
       flex-direction: column;
       gap: 10px;
       padding: 14px 20px;
@@ -37,7 +41,7 @@
     label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
     select, input, textarea, button { font: inherit; color: var(--ink); }
     input[type="number"] { width: 88px; }
-    textarea, #edit-char { width: 100%; }
+    #edit-char { width: 100%; }
     button {
       background: var(--ink);
       color: #fff;
@@ -47,9 +51,11 @@
     }
     button.secondary { background: #fff; color: var(--ink); border: 1px solid var(--stroke); }
     button:disabled { opacity: 0.45; cursor: default; }
-    .layers label { flex-direction: row; align-items: center; gap: 4px; color: var(--ink); font-size: 14px; }
-    main { display: grid; grid-template-columns: 1fr 340px; min-height: calc(100vh - 150px); }
-    #stage { overflow: auto; padding: 16px; background: var(--panel); }
+    .layers label, label.check { flex-direction: row; align-items: center; gap: 4px; color: var(--ink); font-size: 14px; }
+    .readings { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+    .readings button { padding: 2px 8px; }
+    main { display: grid; grid-template-columns: 1fr 340px; flex: 1; min-height: 0; }
+    #stage { overflow: auto; min-height: 0; padding: 16px; background: var(--panel); }
     canvas { background: #fff; }
     #sheet {
       display: grid;
@@ -70,17 +76,16 @@
     #ruler-x { width: 100%; height: 28px; border-bottom: 1px solid var(--stroke); }
     #ruler-y { width: 48px; height: 100%; border-right: 1px solid var(--stroke); }
     #frame { position: relative; min-width: 0; }
-    #canvas { width: 100%; height: auto; display: block; }
+    #canvas, #draft { width: 100%; height: 100%; display: block; }
     #draft {
       position: absolute;
       left: 0;
       top: 0;
-      width: 100%;
-      height: 100%;
       pointer-events: none;
       background: transparent;
     }
-    aside { border-left: 1px solid var(--stroke); padding: 16px; overflow: auto; max-height: calc(100vh - 150px); }
+    button.tool-on { outline: 2px solid var(--selected); outline-offset: -2px; }
+    aside { border-left: 1px solid var(--stroke); padding: 16px; overflow: auto; min-height: 0; }
     aside h2 { font-size: 14px; margin: 16px 0 8px; }
     #status, .hint { color: var(--muted); }
     .hint { font-size: 13px; margin: 4px 0 0; }
@@ -135,6 +140,9 @@
         </select>
       </label>
       <button id="ocr" type="button" disabled>执行 OCR</button>
+      <label class="check" title="用书法单字模型再认每个已切开的字，给出最多 5 个简体候选。原来的识别结果保持不动。需要另行安装 calligraphy，首次会下载模型。">
+        <input id="calligraphy" type="checkbox">二次识别书法单字
+      </label>
       <label>字高（行列窄边）
         <input id="char-px" type="number" min="8" max="4000" step="1" placeholder="标尺量取">
       </label>
@@ -178,6 +186,21 @@
       <button id="apply" class="secondary" type="button">处理</button>
       <span id="applied" class="hint">当前：全部显示</span>
     </div>
+    <div class="row layers" id="tools">
+      <button id="tool-select" class="secondary tool-on" type="button" title="选择（V）。按住 Shift 加选">选择</button>
+      <button id="tool-hand" class="secondary" type="button" title="手形（H），或按住空格拖动">手形</button>
+      <button id="tool-marquee" class="secondary" type="button" title="新建字框（M），拖出矩形">新建</button>
+      <button id="split" class="secondary" type="button" title="拆分（Ctrl+\）" disabled>拆分</button>
+      <button id="merge" class="secondary" type="button" title="合并（Ctrl+E）" disabled>合并</button>
+      <button id="remove" class="secondary" type="button" title="删除（Delete）" disabled>删除</button>
+      <button id="earlier" class="secondary" type="button" title="在语流中前移（Ctrl+[）" disabled>前移</button>
+      <button id="later" class="secondary" type="button" title="在语流中后移（Ctrl+]）" disabled>后移</button>
+      <button id="zoom-out" class="secondary" type="button" title="缩小（Ctrl+-）">−</button>
+      <span id="zoom-label" class="hint">100%</span>
+      <button id="zoom-in" class="secondary" type="button" title="放大（Ctrl++）">+</button>
+      <button id="zoom-fit" class="secondary" type="button" title="适合窗口（Ctrl+0）">适合</button>
+      <button id="zoom-actual" class="secondary" type="button" title="实际像素（Ctrl+1）">1:1</button>
+    </div>
   </header>
   <main>
     <div id="stage">
@@ -193,23 +216,17 @@
     </div>
     <aside>
       <p id="status">打开图片或 PDF，再逐页执行 OCR。改订另存，不覆盖原来的识别结果。</p>
-      <p class="legend">图像四周的标尺以像素计。移动指针显示坐标；按住左键拖动，则显示所画框的宽高。蓝行框，紫虚线是字身格，绿线是单字框。橙不确定，深红是低于阈值的项，红是当前选中。</p>
+      <p class="legend">图像四周的标尺以像素计。Ctrl 加滚轮按指针缩放，空格拖动平移。Ctrl+0 适合窗口，Ctrl+1 为实际像素。Ctrl+Z 撤销，Ctrl+Shift+Z 重做。选择时按住 Shift 加选；拖动显示所画框的宽高。蓝行框，紫虚线是字身格，绿线是单字框。橙不确定，深红是低于阈值的项，红是当前选中。</p>
       <dl id="detail">
         <dt>原文</dt><dd id="original">—</dd>
         <dt>置信度</dt><dd id="score">—</dd>
+        <dt>书法候选</dt><dd id="readings">—</dd>
         <dt>改订</dt>
         <dd>
           <input id="edit-char" type="text" maxlength="32" disabled>
           <button id="save-char" type="button" disabled>保存改订</button>
+          <button id="to-traditional" class="secondary" type="button" disabled title="用 OpenCC 把改订框中的简体转为繁体。转换后仍需保存。">简转繁</button>
           <button id="clear-char" class="secondary" type="button" disabled>清除</button>
-        </dd>
-        <dt>本行原文</dt><dd id="line-text">—</dd>
-        <dt>行置信度</dt><dd id="line-score">—</dd>
-        <dt>行改订</dt>
-        <dd>
-          <textarea id="edit-line" rows="3" disabled></textarea>
-          <button id="save-line" type="button" disabled>保存行改订</button>
-          <button id="clear-line" class="secondary" type="button" disabled>清除</button>
           <p class="hint">留空后保存表示改为空。清除则恢复为未改，原文仍在。</p>
         </dd>
       </dl>
@@ -254,6 +271,13 @@
     let page = null;
     let labels = [];
     let selectedId = null;
+    let selectedIds = new Set();
+    let tool = "select";
+    let spaceHeld = false;
+    let panning = null;
+    let zoom = 1;
+    let undoStack = [];
+    let redoStack = [];
     let loadToken = 0;
     let imageUrl = "";
     let filter = { mode: "all", threshold: 0.8, target: "glyph" };
@@ -359,6 +383,10 @@
       const token = ++loadToken;
       pageIndex = index;
       selectedId = null;
+      selectedIds = new Set();
+      undoStack = [];
+      redoStack = [];
+      updateToolButtons();
       detailToken = "";
       anchor = null;
       box = null;
@@ -382,7 +410,7 @@
       imageUrl = URL.createObjectURL(await picture.blob());
       image.onload = () => {
         if (token !== loadToken) return;
-        draw();
+        paintImage();
         updateScaleHint();
       };
       image.src = imageUrl;
@@ -407,8 +435,7 @@
     }
 
     function hasEdits(value) {
-      return value.glyphs.some((glyph) => glyph.correction != null)
-        || value.lines.some((line) => line.correction != null);
+      return value.glyphs.some((glyph) => glyph.correction != null);
     }
 
     async function runOcr() {
@@ -424,8 +451,12 @@
       body.set("centerfold", document.getElementById("centerfold").value);
       const charPx = document.getElementById("char-px").value.trim();
       if (charPx) body.set("char_px", charPx);
+      const calligraphy = document.getElementById("calligraphy").checked;
+      if (calligraphy) body.set("calligraphy", "1");
       setBusy(true);
-      status.textContent = "正在识别这一页…";
+      status.textContent = calligraphy
+        ? "正在识别这一页，并二次识别书法单字。首次会下载模型，可能较久。"
+        : "正在识别这一页…";
       try {
         const response = await fetch(`/api/session/${sessionId}/pages/${pageIndex}/ocr`, {
           method: "POST",
@@ -436,6 +467,10 @@
         page = data.page;
         measure = data.measure;
         selectedId = null;
+        selectedIds = new Set();
+        undoStack = [];
+        redoStack = [];
+        updateToolButtons();
         detailToken = "";
         status.textContent = `识别完成。本页 ${page.glyphs.length} 个字。`;
         updatePager();
@@ -483,24 +518,24 @@
     }
 
     function drawQuad(quad, color, width, dashed) {
-      ctx.beginPath();
-      ctx.moveTo(quad[0][0], quad[0][1]);
-      for (let i = 1; i < quad.length; i += 1) ctx.lineTo(quad[i][0], quad[i][1]);
-      ctx.closePath();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      ctx.setLineDash(dashed ? [Math.max(4, width * 3), Math.max(3, width * 2)] : []);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      draftCtx.beginPath();
+      draftCtx.moveTo(quad[0][0], quad[0][1]);
+      for (let i = 1; i < quad.length; i += 1) draftCtx.lineTo(quad[i][0], quad[i][1]);
+      draftCtx.closePath();
+      draftCtx.strokeStyle = color;
+      draftCtx.lineWidth = width;
+      draftCtx.setLineDash(dashed ? [Math.max(4, width * 3), Math.max(3, width * 2)] : []);
+      draftCtx.stroke();
+      draftCtx.setLineDash([]);
     }
 
     function paintText(text, x, y, color, size) {
-      ctx.font = `${size}px "Microsoft YaHei", sans-serif`;
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = "#fff";
-      ctx.strokeText(text, x, y);
-      ctx.fillStyle = color;
-      ctx.fillText(text, x, y);
+      draftCtx.font = `${size}px "Microsoft YaHei", sans-serif`;
+      draftCtx.lineWidth = 3;
+      draftCtx.strokeStyle = "#fff";
+      draftCtx.strokeText(text, x, y);
+      draftCtx.fillStyle = color;
+      draftCtx.fillText(text, x, y);
     }
 
     function bounds(quad) {
@@ -672,16 +707,39 @@
       context.stroke();
     }
 
-    function draw() {
+    function paintImage() {
       if (!image.naturalWidth) return;
       canvas.width = image.naturalWidth;
       canvas.height = image.naturalHeight;
+      draft.width = image.naturalWidth;
+      draft.height = image.naturalHeight;
       ctx.drawImage(image, 0, 0);
-      requestAnimationFrame(() => {
-        paintRulers();
-        paintDraft();
-      });
-      if (!page) return;
+      fitZoom();
+      paintOverlay();
+    }
+
+    function draw() {
+      paintOverlay();
+    }
+
+    function paintOverlay() {
+      if (!image.naturalWidth) return;
+      if (draft.width !== image.naturalWidth || draft.height !== image.naturalHeight) {
+        draft.width = image.naturalWidth;
+        draft.height = image.naturalHeight;
+      }
+      draftCtx.clearRect(0, 0, draft.width, draft.height);
+      requestAnimationFrame(paintRulers);
+      if (!page && !box) return;
+      if (page) paintMarks();
+      if (box) {
+        draftCtx.strokeStyle = "#8a1c1c";
+        draftCtx.lineWidth = Math.max(1, image.naturalWidth / 700);
+        draftCtx.strokeRect(box.x, box.y, box.w, box.h);
+      }
+    }
+
+    function paintMarks() {
       const shown = layers();
       const flows = flowOfGlyph();
       const unit = Math.max(2, canvas.width / 900);
@@ -697,10 +755,6 @@
           if (shown.original && line.text && !hasChar) {
             paintText(line.text, box.left, box.top - 4, "#1d4e89", Math.max(14, unit * 7));
           }
-          if (shown.correction && line.correction != null) {
-            const text = line.correction === "" ? "行∅" : line.correction;
-            paintText(text, box.left, box.bottom + unit * 8, "#8a1c1c", Math.max(14, unit * 7));
-          }
         });
       }
       if (shown.cells || shown.glyphs) {
@@ -710,12 +764,14 @@
           let color = "#2a6f4e";
           if (glyph.uncertain) color = "#b15e09";
           if (low) color = "#9f1239";
-          if (glyph.id === selectedId) color = "#8a1c1c";
+          if (selectedIds.has(glyph.id)) color = "#8a1c1c";
           if (shown.cells && glyph.cell) {
             drawQuad(glyph.cell, "#6d28d9", unit, true);
           }
           const labelBox = shown.glyphs ? glyph.quad : glyph.cell;
-          if (shown.glyphs) drawQuad(glyph.quad, color, glyph.id === selectedId ? unit * 2 : unit);
+          if (shown.glyphs) {
+            drawQuad(glyph.quad, color, selectedIds.has(glyph.id) ? unit * 2 : unit);
+          }
           const caption = glyphCaption(glyph, shown);
           if ((!caption.text && !caption.score) || !labelBox) return;
           const box = bounds(labelBox);
@@ -755,11 +811,34 @@
       return inside;
     }
 
-    function selectGlyph(id) {
-      selectedId = id;
+    function selectGlyph(id, options) {
+      const additive = Boolean(options && options.additive);
+      const scroll = !options || options.scroll !== false;
+      if (additive) {
+        if (selectedIds.has(id)) selectedIds.delete(id);
+        else selectedIds.add(id);
+        selectedId = selectedIds.has(id) ? id : ([...selectedIds].at(-1) || null);
+      } else {
+        selectedIds = new Set([id]);
+        selectedId = id;
+      }
       detailToken = "";
+      updateToolButtons();
+      paintOverlay();
       syncDetail(true);
-      draw();
+      if (scroll) scrollGlyphIntoView();
+    }
+
+    function clearSelection() {
+      selectedIds = new Set();
+      selectedId = null;
+      detailToken = "";
+      updateToolButtons();
+      paintOverlay();
+      syncDetail(true);
+    }
+
+    function scrollGlyphIntoView() {
       const glyph = selectedGlyph();
       if (!glyph) return;
       const stage = document.getElementById("stage");
@@ -779,19 +858,14 @@
       if (!force && token === detailToken) return;
       detailToken = token;
       const glyph = selectedGlyph();
-      const line = selectedLine();
       document.getElementById("original").textContent = glyph && glyph.char ? glyph.char : "—";
       document.getElementById("score").textContent = glyph && glyph.score != null ? Number(glyph.score).toFixed(2) : "—";
+      showReadings(glyph);
       document.getElementById("edit-char").value = glyph && glyph.correction != null ? glyph.correction : "";
       document.getElementById("edit-char").disabled = !glyph;
       document.getElementById("save-char").disabled = !glyph;
+      document.getElementById("to-traditional").disabled = !glyph;
       document.getElementById("clear-char").disabled = !glyph || glyph.correction == null;
-      document.getElementById("line-text").textContent = line && line.text ? line.text : "—";
-      document.getElementById("line-score").textContent = line && line.score != null ? Number(line.score).toFixed(2) : "—";
-      document.getElementById("edit-line").value = line && line.correction != null ? line.correction : "";
-      document.getElementById("edit-line").disabled = !line;
-      document.getElementById("save-line").disabled = !line;
-      document.getElementById("clear-line").disabled = !line || line.correction == null;
       const crop = document.getElementById("crop");
       if (!glyph) {
         crop.hidden = true;
@@ -800,6 +874,38 @@
       }
       crop.hidden = false;
       crop.src = `/api/crop?session_id=${sessionId}&page_index=${pageIndex}&glyph_id=${encodeURIComponent(glyph.id)}`;
+    }
+
+    function showReadings(glyph) {
+      const box = document.getElementById("readings");
+      box.replaceChildren();
+      const items = glyph && glyph.candidates ? glyph.candidates : [];
+      if (!items.length) {
+        box.textContent = "—";
+        return;
+      }
+      const wrap = document.createElement("div");
+      wrap.className = "readings";
+      items.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary";
+        const score = item.score == null ? "" : ` ${Number(item.score).toFixed(2)}`;
+        button.textContent = `${item.char}${score}`;
+        button.onclick = () => pickReading(item.char);
+        wrap.append(button);
+      });
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = "简体常用字。点一个写入改订，原文保持不动。";
+      box.append(wrap, note);
+    }
+
+    async function pickReading(char) {
+      const glyph = selectedGlyph();
+      if (!glyph) return;
+      document.getElementById("edit-char").value = char;
+      await saveGlyph(false);
     }
 
     async function saveCorrection(kind, id, correction) {
@@ -812,10 +918,29 @@
       return response.json();
     }
 
+    async function convertChar() {
+      const input = document.getElementById("edit-char");
+      if (input.disabled) return;
+      try {
+        const response = await fetch("/api/traditional", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: input.value }),
+        });
+        if (!response.ok) throw new Error(await errorText(response));
+        const body = await response.json();
+        input.value = body.text;
+        status.textContent = "已把改订框中的字转为繁体。尚未保存。";
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    }
+
     async function saveGlyph(clear) {
       const glyph = selectedGlyph();
       if (!glyph) return;
       const correction = clear ? null : document.getElementById("edit-char").value;
+      remember();
       try {
         const body = await saveCorrection("glyph", glyph.id, correction);
         if (body.char !== glyph.char) throw new Error("原文被改动了，已停止。");
@@ -828,25 +953,7 @@
         refreshFlows();
         draw();
       } catch (error) {
-        status.textContent = error.message;
-      }
-    }
-
-    async function saveLine(clear) {
-      const line = selectedLine();
-      if (!line) return;
-      const correction = clear ? null : document.getElementById("edit-line").value;
-      try {
-        const body = await saveCorrection("line", line.id, correction);
-        if (body.text !== line.text) throw new Error("行原文被改动了，已停止。");
-        if (body.correction == null) delete line.correction;
-        else line.correction = body.correction;
-        status.textContent = clear ? "已清除行改订，行原文仍在。" : "已保存行改订，行原文未改。";
-        detailToken = "";
-        syncDetail(true);
-        refreshQueue();
-        draw();
-      } catch (error) {
+        undoStack.pop();
         status.textContent = error.message;
       }
     }
@@ -1006,18 +1113,194 @@
       element.textContent = "";
     }
 
-    function paintDraft() {
-      if (!image.naturalWidth) return;
-      draft.width = image.naturalWidth;
-      draft.height = image.naturalHeight;
-      if (!box) return;
-      draftCtx.strokeStyle = "#8a1c1c";
-      draftCtx.lineWidth = Math.max(1, image.naturalWidth / 700);
-      draftCtx.strokeRect(box.x, box.y, box.w, box.h);
+    const ZOOM_STOPS = [0.05, 0.0625, 0.125, 0.25, 1 / 3, 0.5, 2 / 3, 1, 1.5, 2, 3, 4, 6, 8];
+
+    function layoutZoom() {
+      const frame = document.getElementById("frame");
+      const sheet = document.getElementById("sheet");
+      const width = Math.max(1, Math.round((image.naturalWidth || 1) * zoom));
+      const height = Math.max(1, Math.round((image.naturalHeight || 1) * zoom));
+      frame.style.width = `${width}px`;
+      frame.style.height = `${height}px`;
+      sheet.style.width = `${48 + width}px`;
+      document.getElementById("zoom-label").textContent = `${Math.round(zoom * 100)}%`;
+      requestAnimationFrame(paintRulers);
+    }
+
+    function fitZoom() {
+      const stage = document.getElementById("stage");
+      const availW = stage.clientWidth - 48 - 32;
+      const availH = stage.clientHeight - 28 - 32;
+      if (!image.naturalWidth || availW < 40 || availH < 40) zoom = 1;
+      else {
+        zoom = Math.min(availW / image.naturalWidth, availH / image.naturalHeight, 8);
+        zoom = Math.max(0.05, zoom);
+      }
+      layoutZoom();
+    }
+
+    function actualZoom() {
+      zoom = 1;
+      layoutZoom();
+    }
+
+    function stepZoom(direction) {
+      const next = direction > 0
+        ? ZOOM_STOPS.find((stop) => stop > zoom + 1e-6)
+        : [...ZOOM_STOPS].reverse().find((stop) => stop < zoom - 1e-6);
+      zoom = next || (direction > 0 ? 8 : 0.05);
+      layoutZoom();
+    }
+
+    function zoomAt(clientX, clientY, factor) {
+      const stage = document.getElementById("stage");
+      const rect = canvas.getBoundingClientRect();
+      const stageRect = stage.getBoundingClientRect();
+      if (!rect.width || !image.naturalWidth) return;
+      const originX = stage.scrollLeft + (rect.left - stageRect.left);
+      const originY = stage.scrollTop + (rect.top - stageRect.top);
+      const imageX = ((clientX - rect.left) / rect.width) * image.naturalWidth;
+      const imageY = ((clientY - rect.top) / rect.height) * image.naturalHeight;
+      const viewX = clientX - stageRect.left;
+      const viewY = clientY - stageRect.top;
+      zoom = Math.min(8, Math.max(0.05, zoom * factor));
+      layoutZoom();
+      stage.scrollLeft = originX + imageX * (canvas.clientWidth / image.naturalWidth) - viewX;
+      stage.scrollTop = originY + imageY * (canvas.clientHeight / image.naturalHeight) - viewY;
+    }
+
+    function handActive() {
+      return tool === "hand" || spaceHeld;
+    }
+
+    function refreshCursor() {
+      if (panning) canvas.style.cursor = "grabbing";
+      else if (handActive()) canvas.style.cursor = "grab";
+      else if (tool === "marquee") canvas.style.cursor = "crosshair";
+      else canvas.style.cursor = "default";
+    }
+
+    function setTool(name) {
+      tool = name;
+      updateToolButtons();
+      refreshCursor();
+    }
+
+    function updateToolButtons() {
+      document.getElementById("tool-select").classList.toggle("tool-on", tool === "select");
+      document.getElementById("tool-hand").classList.toggle("tool-on", tool === "hand");
+      document.getElementById("tool-marquee").classList.toggle("tool-on", tool === "marquee");
+      const count = selectedIds.size;
+      document.getElementById("split").disabled = count !== 1;
+      document.getElementById("merge").disabled = count < 2;
+      document.getElementById("remove").disabled = count < 1;
+      document.getElementById("earlier").disabled = count < 1;
+      document.getElementById("later").disabled = count < 1;
+    }
+
+    function typing() {
+      const el = document.activeElement;
+      return Boolean(el && (el.closest("input, textarea, select") || el.isContentEditable));
+    }
+
+    function remember() {
+      if (!page) return;
+      undoStack.push(JSON.stringify(page));
+      if (undoStack.length > 40) undoStack.shift();
+      redoStack = [];
+    }
+
+    function applySelection(ids) {
+      const present = new Set(page ? page.glyphs.map((glyph) => glyph.id) : []);
+      selectedIds = new Set(ids.filter((id) => present.has(id)));
+      selectedId = [...selectedIds].at(-1) || null;
+      detailToken = "";
+      updateToolButtons();
+      paintOverlay();
+      syncDetail(true);
+      refreshQueue();
+      refreshFlows();
+    }
+
+    async function editGlyphs(op, extra) {
+      if (!sessionId || !page) return;
+      remember();
+      try {
+        const response = await fetch(`/api/session/${sessionId}/pages/${pageIndex}/edit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ op, ...extra }),
+        });
+        if (!response.ok) throw new Error(await errorText(response));
+        const data = await response.json();
+        page = data.page;
+        applySelection(data.ids || []);
+        status.textContent = "已改字框。";
+      } catch (error) {
+        undoStack.pop();
+        status.textContent = error.message;
+      }
+    }
+
+    async function restorePage(snapshot) {
+      const response = await fetch(`/api/session/${sessionId}/pages/${pageIndex}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: snapshot,
+      });
+      if (!response.ok) throw new Error(await errorText(response));
+      page = (await response.json()).page;
+      applySelection([...selectedIds]);
+      status.textContent = "已恢复这一页。";
+    }
+
+    async function undo() {
+      if (!undoStack.length || !page) return;
+      const snapshot = undoStack.pop();
+      redoStack.push(JSON.stringify(page));
+      try {
+        await restorePage(snapshot);
+      } catch (error) {
+        redoStack.pop();
+        undoStack.push(snapshot);
+        status.textContent = error.message;
+      }
+    }
+
+    async function redo() {
+      if (!redoStack.length || !page) return;
+      const snapshot = redoStack.pop();
+      undoStack.push(JSON.stringify(page));
+      try {
+        await restorePage(snapshot);
+      } catch (error) {
+        undoStack.pop();
+        redoStack.push(snapshot);
+        status.textContent = error.message;
+      }
+    }
+
+    function startPan(event) {
+      const stage = document.getElementById("stage");
+      panning = {
+        x: event.clientX,
+        y: event.clientY,
+        left: stage.scrollLeft,
+        top: stage.scrollTop,
+      };
+      dragMoved = false;
+      refreshCursor();
     }
 
     canvas.addEventListener("mousedown", (event) => {
-      if (event.button !== 0 || !image.naturalWidth) return;
+      if (!image.naturalWidth) return;
+      if (typing()) document.activeElement.blur();
+      if (event.button === 1 || (event.button === 0 && handActive())) {
+        event.preventDefault();
+        startPan(event);
+        return;
+      }
+      if (event.button !== 0) return;
       event.preventDefault();
       anchor = imagePoint(event);
       pointer = anchor;
@@ -1025,10 +1308,19 @@
       measuring = false;
       box = { x: anchor.x, y: anchor.y, w: 0, h: 0 };
       showCursor();
-      paintDraft();
+      paintOverlay();
     });
     canvas.addEventListener("mousemove", (event) => {
       if (!image.naturalWidth) return;
+      if (panning) {
+        const stage = document.getElementById("stage");
+        const dx = event.clientX - panning.x;
+        const dy = event.clientY - panning.y;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
+        stage.scrollLeft = panning.left - dx;
+        stage.scrollTop = panning.top - dy;
+        return;
+      }
       pointer = imagePoint(event);
       if (anchor && (event.buttons & 1)) {
         const width = pointer.x - anchor.x;
@@ -1040,47 +1332,120 @@
           w: Math.abs(width),
           h: Math.abs(height),
         };
-        paintDraft();
+        paintOverlay();
       }
       showCursor();
       paintRulers();
     });
     window.addEventListener("mouseup", (event) => {
+      if (panning && (event.button === 0 || event.button === 1)) {
+        panning = null;
+        refreshCursor();
+        return;
+      }
       if (event.button !== 0 || !anchor) return;
+      const created = tool === "marquee" && box && box.w >= 8 && box.h >= 8;
+      const quad = created
+        ? [[box.x, box.y], [box.x + box.w, box.y], [box.x + box.w, box.y + box.h], [box.x, box.y + box.h]]
+        : null;
       anchor = null;
-      if (!dragMoved) {
+      if (!dragMoved || created) {
         box = null;
         measuring = false;
-        paintDraft();
-      } else {
-        measuring = true;
-      }
+        paintOverlay();
+      } else measuring = true;
       showCursor();
+      if (quad) editGlyphs("create", { quad });
     });
     canvas.addEventListener("mouseleave", () => {
+      if (panning) return;
       pointer = null;
       showCursor();
       paintRulers();
     });
+    document.getElementById("stage").addEventListener("wheel", (event) => {
+      if (!(event.ctrlKey || event.metaKey || event.altKey) || !image.naturalWidth) return;
+      event.preventDefault();
+      zoomAt(event.clientX, event.clientY, event.deltaY < 0 ? 1.1 : 1 / 1.1);
+    }, { passive: false });
+    window.addEventListener("keydown", (event) => {
+      if (event.code === "Space") {
+        if (typing()) return;
+        spaceHeld = true;
+        refreshCursor();
+        event.preventDefault();
+        return;
+      }
+      if (typing()) return;
+      const ctrl = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (!ctrl && !event.altKey && key === "v") setTool("select");
+      else if (!ctrl && !event.altKey && key === "h") setTool("hand");
+      else if (!ctrl && !event.altKey && key === "m") setTool("marquee");
+      else if (key === "escape") clearSelection();
+      else if ((key === "delete" || key === "backspace") && selectedIds.size) {
+        event.preventDefault();
+        editGlyphs("delete", { ids: [...selectedIds] });
+      } else if (ctrl && event.key === "\\" && selectedIds.size === 1) {
+        event.preventDefault();
+        editGlyphs("split", { id: selectedId });
+      } else if (ctrl && key === "e" && selectedIds.size >= 2) {
+        event.preventDefault();
+        editGlyphs("merge", { ids: [...selectedIds] });
+      } else if (ctrl && event.key === "[" && selectedIds.size) {
+        event.preventDefault();
+        editGlyphs("move", { ids: [...selectedIds], direction: -1 });
+      } else if (ctrl && event.key === "]" && selectedIds.size) {
+        event.preventDefault();
+        editGlyphs("move", { ids: [...selectedIds], direction: 1 });
+      } else if (ctrl && key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undo();
+      } else if (ctrl && ((key === "z" && event.shiftKey) || key === "y")) {
+        event.preventDefault();
+        redo();
+      } else if (ctrl && (event.key === "+" || event.key === "=" || event.code === "NumpadAdd")) {
+        event.preventDefault();
+        stepZoom(1);
+      } else if (ctrl && (event.key === "-" || event.key === "_" || event.code === "NumpadSubtract")) {
+        event.preventDefault();
+        stepZoom(-1);
+      } else if (ctrl && (event.key === "0" || event.code === "Numpad0")) {
+        event.preventDefault();
+        fitZoom();
+      } else if (ctrl && (event.key === "1" || event.code === "Numpad1") && !event.shiftKey) {
+        event.preventDefault();
+        actualZoom();
+      }
+    });
+    window.addEventListener("keyup", (event) => {
+      if (event.code !== "Space") return;
+      spaceHeld = false;
+      refreshCursor();
+    });
+    window.addEventListener("blur", () => {
+      spaceHeld = false;
+      panning = null;
+      refreshCursor();
+    });
     window.addEventListener("resize", () => requestAnimationFrame(paintRulers));
     document.getElementById("char-px").addEventListener("input", updateScaleHint);
     canvas.addEventListener("click", (event) => {
-      if (dragMoved) {
+      if (dragMoved || tool !== "select" || spaceHeld) {
         dragMoved = false;
         return;
       }
       if (!page) return;
-      const rect = canvas.getBoundingClientRect();
-      const x = (event.clientX - rect.left) * (canvas.width / rect.width);
-      const y = (event.clientY - rect.top) * (canvas.height / rect.height);
+      const point = imagePoint(event);
       const flows = flowOfGlyph();
       const shown = layers();
       const hit = [...page.glyphs].reverse().find((glyph) => {
         if (!glyphShown(glyph, flows)) return false;
-        if (shown.glyphs && pointInQuad(x, y, glyph.quad)) return true;
-        return shown.cells && glyph.cell && pointInQuad(x, y, glyph.cell);
+        if (shown.glyphs && pointInQuad(point.x, point.y, glyph.quad)) return true;
+        return shown.cells && glyph.cell && pointInQuad(point.x, point.y, glyph.cell);
       });
-      if (hit) selectGlyph(hit.id);
+      if (hit) selectGlyph(hit.id, { additive: event.shiftKey, scroll: false });
+      else if (!event.shiftKey) clearSelection();
     });
 
     document.getElementById("open").onclick = openFiles;
@@ -1090,9 +1455,26 @@
     document.getElementById("download").onclick = downloadPage;
     document.getElementById("apply").onclick = applyThreshold;
     document.getElementById("save-char").onclick = () => saveGlyph(false);
+    document.getElementById("to-traditional").onclick = convertChar;
     document.getElementById("clear-char").onclick = () => saveGlyph(true);
-    document.getElementById("save-line").onclick = () => saveLine(false);
-    document.getElementById("clear-line").onclick = () => saveLine(true);
+    document.getElementById("tool-select").onclick = () => setTool("select");
+    document.getElementById("tool-hand").onclick = () => setTool("hand");
+    document.getElementById("tool-marquee").onclick = () => setTool("marquee");
+    document.getElementById("split").onclick = () => {
+      if (selectedId) editGlyphs("split", { id: selectedId });
+    };
+    document.getElementById("merge").onclick = () => editGlyphs("merge", { ids: [...selectedIds] });
+    document.getElementById("remove").onclick = () => editGlyphs("delete", { ids: [...selectedIds] });
+    document.getElementById("earlier").onclick = () => {
+      editGlyphs("move", { ids: [...selectedIds], direction: -1 });
+    };
+    document.getElementById("later").onclick = () => {
+      editGlyphs("move", { ids: [...selectedIds], direction: 1 });
+    };
+    document.getElementById("zoom-out").onclick = () => stepZoom(-1);
+    document.getElementById("zoom-in").onclick = () => stepZoom(1);
+    document.getElementById("zoom-fit").onclick = fitZoom;
+    document.getElementById("zoom-actual").onclick = actualZoom;
     document.querySelectorAll(".layers input").forEach((input) => {
       input.onchange = () => {
         refreshFlows();
@@ -1101,6 +1483,7 @@
     });
     refreshQueue();
     updateScaleHint();
+    updateToolButtons();
   </script>
 </body>
 </html>

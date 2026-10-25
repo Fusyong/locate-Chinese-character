@@ -31,11 +31,11 @@ def test_empty_correction_means_cleared_character_and_none_removes_it():
     assert page.glyphs[0].char == "甲"
 
 
-def test_line_correction_does_not_replace_text():
+def test_line_correction_is_rejected():
     page = _page()
-    set_correction(page, "line", "l1", "改正")
+    with pytest.raises(ValueError, match="单字"):
+        set_correction(page, "line", "l1", "改正")
     assert page.lines[0].text == "甲乙"
-    assert page.lines[0].correction == "改正"
     assert page.flows[0].text == "甲乙"
 
 
